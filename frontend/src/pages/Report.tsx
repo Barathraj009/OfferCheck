@@ -1,4 +1,6 @@
+import { useEffect, useState } from "react";
 import type { Check, Claims, Finding, Report } from "../types";
+import { getSavedReport, saveReport, shareLink } from "../api";
 
 const LEVEL_STYLE: Record<string, { text: string; bg: string; bar: string }> = {
   low: { text: "text-okay", bg: "bg-okay-tint", bar: "#23704A" }, moderate: { text: "text-amber", bg: "bg-amber-tint", bar: "#8A5A00" },
@@ -12,7 +14,11 @@ const SEV: Record<string, { label: string; cls: string; color: string }> = {
 };
 const STATUS: Record<string, string> = { verified: "Verified", not_found: "Not found in this source", unavailable: "Unavailable / not verified", not_applicable: "Not run", claim: "Stated in the offer text" };
 const CONF_STYLE = { High: "bg-okay-tint text-okay", Medium: "bg-amber-tint text-amber", Low: "bg-signal-tint text-signal" };
-const when = (t: string) => { const d = new Date(t); return isNaN(d.getTime()) ? t : d.toLocaleString(); };
+
+function when(t: string) {
+  const d = new Date(t);
+  return isNaN(d.getTime()) ? t : d.toLocaleString();
+}
 
 function Meter({ score }: { score: number }) {
   const seg = [["Low", 25, "#23704A"], ["Moderate", 25, "#8A5A00"], ["High", 30, "#B8322A"], ["Very high", 20, "#8E1F19"]] as const;
@@ -79,7 +85,61 @@ function CheckRow({ c }: { c: Check }) {
   );
 }
 
-export default function ReportPage({ report: r, onNew }: { report: Report; onNew: () => void }) {
+export default function ReportPage({ report: rProp, reportId, onNew }: { report: Report | null; reportId?: string; onNew: () => void }) {
+  const [loaded, setLoaded] = useState<Report | null>(rProp);
+  const [saving, setSaving] = useState(false);
+  const [shareUrl, setShareUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (loaded || !reportId) return;
+    getSavedReport(reportId)
+      .then((r: Report) => { setLoaded(r); setShareUrl(shareLink(reportId)); })
+      .catch(() => setError("We couldn't load this saved report. It may have been deleted or the link is wrong."));
+  }, [loaded, reportId]);
+
+  async function onSave() {
+    if (!loaded) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await saveReport(loaded);
+      setShareUrl(shareLink(res.id));
+    } catch (e: any) {
+      setError(e.message ?? "Could not save the report.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function exportJson() {
+    if (!loaded) return;
+    const blob = new Blob([JSON.stringify(loaded, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `offercheck-report-${loaded.generated_at.slice(0, 10)}.json`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  if (error && !loaded) {
+    return (
+      <main id="main" className="mx-auto max-w-2xl px-4 py-10">
+        <h1 className="text-2xl font-bold">Saved report</h1>
+        <p className="mt-3 text-muted">{error}</p>
+        <button className="btn-primary mt-4" onClick={onNew}>Check a new offer</button>
+      </main>
+    );
+  }
+  const r = loaded;
+  if (!r) {
+    return (
+      <main id="main" className="mx-auto max-w-2xl px-4 py-10">
+        <h1 className="text-2xl font-bold">Loading report…</h1>
+        <p className="mt-3 text-muted">If this takes a moment, the link may be invalid or the server is offline.</p>
+      </main>
+    );
+  }
   const st = LEVEL_STYLE[r.risk.level_key] ?? LEVEL_STYLE.insufficient;
   const risk = r.findings.filter((f) => f.points > 0);
   const fine = r.findings.filter((f) => f.points === 0);
@@ -202,6 +262,12 @@ export default function ReportPage({ report: r, onNew }: { report: Report; onNew
       <div className="no-print mt-8 flex flex-wrap gap-3">
         <button className="btn-primary" onClick={onNew}>Check another offer</button>
         <button className="btn-ghost" onClick={() => window.print()}>Print or save as PDF</button>
+        <button className="btn-ghost" onClick={exportJson} disabled={!r}>Export JSON</button>
+        <button className="btn-ghost" onClick={onSave} disabled={!r || saving}>{saving ? "Saving…" : (shareUrl ? "Saved! Share link" : "Save report")}</button>
+        {shareUrl && (
+          <input aria-label="Shareable link" className="max-w-xs flex-1 truncate rounded border border-rule px-2 py-1 text-sm" readOnly value={shareUrl} onFocus={(e) => e.currentTarget.select()} />
+        )}
+        {error && <p className="self-center text-sm text-signal">{error}</p>}
         <a href="#/learn" className="btn-ghost">Learn about these warning signs</a>
       </div>
     </main>

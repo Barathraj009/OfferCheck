@@ -70,6 +70,10 @@ export default function App() {
   if (route === "/analysis") page = pending ? <Analyzing live={form.mode === "live"} /> : <Check form={form} setForm={setForm} health={health} healthErr={healthErr} error={error} onSubmit={submit} />;
   else if (route === "/check") page = <Check form={form} setForm={setForm} health={health} healthErr={healthErr} error={error} onSubmit={submit} />;
   else if (route === "/report") page = report ? <ReportPage report={report} onNew={() => { setForm(emptyForm(health?.default_mode ?? "demo")); setError(null); go("/check"); }} /> : <Check form={form} setForm={setForm} health={health} healthErr={healthErr} error={error} onSubmit={submit} />;
+  else if (route.startsWith("/report/")) {
+    const rid = route.slice(8);
+    page = <ReportPage report={null as any} reportId={rid} onNew={() => { setForm(emptyForm(health?.default_mode ?? "demo")); setError(null); go("/check"); }} />;
+  }
   else if (route === "/learn") page = <Learn />;
   else if (route === "/about") page = <About />;
   else page = <Home />;
