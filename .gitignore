@@ -12,6 +12,9 @@ venv/
 .pytest_cache/
 .ruff_cache/
 
+# Local report database (user data, never commit)
+backend/data/
+
 # Node / frontend build
 node_modules/
 dist/

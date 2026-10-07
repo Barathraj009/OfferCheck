@@ -1,10 +1,12 @@
 """FastAPI service. Run from /backend:  uvicorn app.main:app --reload"""
 from __future__ import annotations
 import asyncio
+import json
 import logging
 import re
 import time
 from collections import defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 from fastapi import FastAPI, File, Request, UploadFile
@@ -13,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from . import demo
+from . import demo, store
 from .analysis import run_analysis
 from .config import get_settings
 from .validators import CHAINS, ValidationFailure
@@ -22,13 +24,15 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 log = logging.getLogger("scamcheck")
 S = get_settings()
 app = FastAPI(title="Crypto Offer Verification API", version="1.0")
-app.add_middleware(CORSMiddleware, allow_origins=S.allowed_origins, allow_methods=["GET", "POST"], allow_headers=["Content-Type"])
+app.add_middleware(CORSMiddleware, allow_origins=S.allowed_origins, allow_methods=["GET", "POST", "DELETE"], allow_headers=["Content-Type"])
 
 _hits: dict[str, list[float]] = defaultdict(list)
 
 
-def _limited(request: Request) -> bool:
+def _limited(request: Request, bucket: str = "") -> bool:
     ip = request.client.host if request.client else "?"
+    if bucket:
+        ip = f"{bucket}:{ip}"
     now = time.time()
     if len(_hits) > 1000:  # bound memory even if many distinct IPs appear
         for k in [k for k, v in _hits.items() if not v or now - v[-1] >= 600]:
@@ -138,6 +142,52 @@ async def ocr(request: Request, file: UploadFile = File(...), lang: str = "eng")
         return _err(500, None, "Reading that image failed. Please try another screenshot or type the text instead.")
     return {"text": result.text, "empty": not result.text,
             "confidence": result.confidence, "variant": result.variant, "rotated": result.rotated}
+
+
+@app.post("/api/reports")
+async def save_report(request: Request):
+    """Persist a generated report (explicit user action; raw input text is never stored)."""
+    if _limited(request, "report"):
+        return _err(429, None, "Too many saves from this address. Please wait a few minutes.")
+    body = b""
+    async for chunk in request.stream():
+        body += chunk
+        if len(body) > store.MAX_PAYLOAD_BYTES:
+            return _err(413, None, "This report is too large to save.")
+    if not body:
+        return _err(422, None, "No report was submitted.")
+    try:
+        report = json.loads(body)
+    except ValueError:
+        return _err(422, None, "The submitted report is not valid JSON.")
+    try:
+        rid = store.save(report)
+    except store.InvalidReport as e:
+        return _err(422, None, f"This is not a complete report ({e}).")
+    except Exception:
+        log.exception("saving report failed")
+        return _err(500, None, "The report could not be saved. Please try again.")
+    return {"id": rid, "saved_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+
+
+@app.get("/api/reports")
+async def list_reports():
+    return {"reports": store.list_reports()}
+
+
+@app.get("/api/reports/{rid}")
+async def get_report(rid: str):
+    report = store.get(rid)
+    if report is None:
+        return _err(404, "id", "No saved report with that id. It may have been deleted or pruned.")
+    return report
+
+
+@app.delete("/api/reports/{rid}")
+async def delete_report(rid: str):
+    if not store.delete(rid):
+        return _err(404, "id", "No saved report with that id.")
+    return {"deleted": True}
 
 
 _dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
