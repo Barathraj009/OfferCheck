@@ -73,8 +73,15 @@ def main() -> int:
     check_pkg("dotenv", "python-dotenv (optional .env loading)", False)
     check_pkg("pytesseract", "pytesseract (Python OCR wrapper)", False)
 
-    # Tesseract binary (screenshot OCR)
+    # Tesseract binary (screenshot OCR) - PATH first, then the default Windows install dir
     binary = shutil.which("tesseract")
+    if not binary:
+        try:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from app.ocr import ensure_tesseract  # type: ignore
+            binary = ensure_tesseract()
+        except Exception:  # noqa: BLE001
+            binary = None
     if binary:
         add("Tesseract OCR binary", R, binary)
     else:

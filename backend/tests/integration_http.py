@@ -224,22 +224,71 @@ def main() -> int:
 
         # --- 7. OCR endpoint (Tesseract may be absent; must degrade to a clear 503) ---
         import base64
-        boundary = "x" * 16
-        png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
-        body = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"t.png\"\r\n"
-                f"Content-Type: image/png\r\n\r\n").encode() + png + f"\r\n--{boundary}--\r\n".encode()
-        r = urllib.request.Request(f"http://127.0.0.1:{port}/api/ocr?lang=eng", data=body,
-                                   headers={"Content-Type": f"multipart/form-data; boundary={boundary}"}, method="POST")
+
+        def ocr_post(data: bytes, ctype: str = "image/png", filename: str = "t.png", lang: str = "eng") -> tuple[int, dict]:
+            boundary = "x" * 16
+            body = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n"
+                    f"Content-Type: {ctype}\r\n\r\n").encode() + data + f"\r\n--{boundary}--\r\n".encode()
+            r = urllib.request.Request(f"http://127.0.0.1:{port}/api/ocr?lang={lang}", data=body,
+                                       headers={"Content-Type": f"multipart/form-data; boundary={boundary}"}, method="POST")
+            try:
+                with urllib.request.urlopen(r, timeout=60) as resp:
+                    return resp.status, json.loads(resp.read())
+            except urllib.error.HTTPError as e:
+                raw = e.read().decode(errors="replace")
+                try:
+                    return e.code, json.loads(raw)
+                except ValueError:
+                    return e.code, {"raw": raw[:200]}
+            except Exception as e:  # noqa: BLE001
+                return 0, {"error": {"message": str(e)}}
+
+        # 7a. real screenshot with offer text -> real extracted text (or honest 503)
         try:
-            with urllib.request.urlopen(r, timeout=30) as resp:
-                code, payload = resp.status, json.loads(resp.read())
-        except urllib.error.HTTPError as e:
-            code, payload = e.code, json.loads(e.read().decode(errors="replace") or "{}")
-        except Exception as e:  # noqa: BLE001
-            code, payload = 0, {"error": {"message": str(e)}}
-        ocr_ok = (code == 200 and "text" in payload) or (code == 503 and "Tesseract" in payload.get("error", {}).get("message", ""))
-        check("OCR endpoint responds safely (result or clear 503)", ocr_ok,
-              f"HTTP {code} {str(payload.get('error', payload))[:80]}")
+            from PIL import Image as PILImage, ImageDraw, ImageFont
+            _font = ImageFont.truetype(r"C:\Windows\Fonts\arial.ttf", 30) if os.name == "nt" else ImageFont.load_default(size=30)
+            _img = PILImage.new("RGB", (1100, 300), "white")
+            _d = ImageDraw.Draw(_img)
+            for _i, _line in enumerate(["GUARANTEED 10x RETURN in 30 days!",
+                                        "Bitcoin Flash Sale - 1 BTC only $30,000",
+                                        "Offer expires in 2 hours - act now!",
+                                        "https://bitcoingiveaway.example.com"]):
+                _d.text((40, 30 + _i * 65), _line, fill="black", font=_font)
+            import io as _io
+            _buf = _io.BytesIO(); _img.save(_buf, "PNG"); _shot = _buf.getvalue()
+        except Exception:
+            _shot = None
+        if _shot:
+            code, payload = ocr_post(_shot)
+            degraded = code == 503 and "Tesseract" in payload.get("error", {}).get("message", "")
+            text = (payload.get("text") or "").lower()
+            strict_ok = code == 200 and "empty" in payload and (not payload.get("empty")) \
+                and ("guaranteed" in text or "bitcoin" in text) and isinstance(payload.get("confidence"), (int, float))
+            check("OCR: real screenshot -> extracted offer text (or clear 503)", strict_ok or degraded,
+                  f"HTTP {code} conf={payload.get('confidence')} text={text[:60]!r}")
+            # 7b. blank image -> empty result, never a crash
+            _blank = PILImage.new("RGB", (300, 150), "white")
+            _bbuf = _io.BytesIO(); _blank.save(_bbuf, "PNG")
+            code, payload = ocr_post(_bbuf.getvalue())
+            check("OCR: blank image -> empty:true (or clear 503)",
+                  (code == 200 and payload.get("empty") is True and payload.get("text") == "") or degraded,
+                  f"HTTP {code} {str(payload)[:80]}")
+        # 7c. garbage bytes posing as PNG -> 422, not a crash
+        code, payload = ocr_post(b"\x89PNG\r\n\x1a\n" + os.urandom(600))
+        check("OCR: corrupt image -> 422 clear message", code == 422 and payload.get("error", {}).get("field") == "file",
+              f"HTTP {code} {str(payload)[:80]}")
+        # 7d. wrong file type -> 415
+        code, payload = ocr_post(b"<html>script</html>", ctype="text/html", filename="x.html")
+        check("OCR: non-image upload -> 415", code == 415 and payload.get("error", {}).get("field") == "file",
+              f"HTTP {code}")
+        # 7e. oversized upload -> 413
+        code, payload = ocr_post(os.urandom(5 * 1048576 + 1024))
+        check("OCR: >5MB upload -> 413", code == 413, f"HTTP {code}")
+        # 7f. missing language pack -> 422 with guidance (eng only on most machines)
+        if _shot:
+            code, payload = ocr_post(_shot, lang="zzz")
+            check("OCR: unknown language pack -> 422 guidance (or 503 when unavailable)",
+                  code in (422, 503), f"HTTP {code} {str(payload)[:80]}")
 
         # --- 8. rate limit (live mode; text-only input so no external calls) ---
         last = None

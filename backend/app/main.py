@@ -1,7 +1,6 @@
 """FastAPI service. Run from /backend:  uvicorn app.main:app --reload"""
 from __future__ import annotations
 import asyncio
-import io
 import logging
 import re
 import time
@@ -109,33 +108,33 @@ async def ocr(request: Request, file: UploadFile = File(...), lang: str = "eng")
     if len(data) > S.max_upload_bytes:
         return _err(413, "file", f"The image is larger than {S.max_upload_bytes // 1_048_576} MB.")
     try:
-        from PIL import Image
-        img = Image.open(io.BytesIO(data))
-        img.verify()
-        img = Image.open(io.BytesIO(data))
-        if img.width * img.height > 25_000_000:
+        from .ocr import OcrLanguageError, OcrUnavailable, decode_image, extract_text
+    except ImportError as e:  # pragma: no cover - Pillow/pytesseract wrapper missing
+        log.warning("ocr module unavailable: %s", e)
+        return _err(503, None, "Text extraction (OCR) is not available on this server. Type the text instead.")
+    try:
+        img = decode_image(data)
+    except ValueError as e:
+        msg = str(e)
+        if "resolution" in msg:
             return _err(413, "file", "The image resolution is too large.")
-        img = img.convert("RGB")
-    except Exception:
+        if "too small" in msg:
+            return _err(422, "file", "That image is too small to contain readable text.")
         return _err(422, "file", "This file could not be read as an image.")
     try:
-        from PIL import ImageOps
-        # Preprocess for recognition on CPU-only Tesseract: grayscale + autocontrast for
-        # screenshots with poor contrast, upscale small images (phones) so glyphs are readable.
-        proc = ImageOps.autocontrast(img.convert("L"))
-        if proc.width < 1200:  # never upscale large images: cost without benefit
-            f = min(3.0, 1200 / max(1, proc.width))
-            proc = proc.resize((max(1, int(proc.width * f)), max(1, int(proc.height * f))))
-    except Exception:  # preprocessing is best-effort; raw image still works
-        proc = img
-    try:
-        import pytesseract
-        text = await asyncio.to_thread(pytesseract.image_to_string, proc, lang)
-    except Exception as e:
-        log.warning("ocr unavailable: %s", type(e).__name__)
+        # Adaptive local OCR: grayscale first, extra passes + orientation fix only when
+        # Tesseract's own confidence is low (see app/ocr.py). Runs in a worker thread.
+        result = await asyncio.to_thread(extract_text, img, lang, S.max_input_chars)
+    except OcrUnavailable:
+        log.warning("ocr unavailable: tesseract missing")
         return _err(503, None, "Text extraction (OCR) is not available on this server. Install Tesseract (see README) or type the text instead.")
-    text = text.strip()[: S.max_input_chars]
-    return {"text": text, "empty": not text}
+    except OcrLanguageError:
+        return _err(422, "lang", "That text-recognition language is not installed on this server. English OCR is available - try lang=eng.")
+    except Exception:
+        log.exception("ocr crashed")
+        return _err(500, None, "Reading that image failed. Please try another screenshot or type the text instead.")
+    return {"text": result.text, "empty": not result.text,
+            "confidence": result.confidence, "variant": result.variant, "rotated": result.rotated}
 
 
 _dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
