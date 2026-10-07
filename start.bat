@@ -11,7 +11,7 @@ start "OfferCheck-Backend" cmd /c "cd /d %~dp0backend && %PYTHON% -m uvicorn app
 timeout /t 3 /nobreak >nul
 
 echo [2/4] Starting frontend dev server on http://127.0.0.1:5173
-start "OfferCheck-Frontend" cmd /c "cd /d %~dp0frontend && %NODE% node_modules\.bin\vite.cmd --host 127.0.0.1 --port 5173"
+start "OfferCheck-Frontend" cmd /c "cd /d %~dp0frontend && %NODE% node_modules\vite\bin\vite.js --host 127.0.0.1 --port 5173"
 
 timeout /t 3 /nobreak >nul
 
