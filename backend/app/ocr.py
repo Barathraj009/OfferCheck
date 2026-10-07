@@ -192,4 +192,8 @@ def decode_image(data: bytes) -> Image.Image:
         raise
     except Exception as e:  # noqa: BLE001
         raise ValueError("not an image") from e
-    return img.convert("RGB")
+    # Phone cameras often store orientation only in EXIF - apply it so sideways
+    # screenshots are upright before OCR sees them.
+    from PIL import ImageOps
+    transposed = ImageOps.exif_transpose(img)
+    return (transposed or img).convert("RGB")

@@ -316,6 +316,23 @@ def main() -> int:
         code, rep = req(port, "/api/analyze", {"mode": "demo", "text": "x" * 20001})
         check("oversized body uses the same error shape", code == 422 and set(rep.get("error", {})) == {"field", "message"},
               json.dumps(rep)[:100])
+        # --- 10b. input hardening: malformed JSON, unknown fields, bad mode ---
+        try:
+            r = urllib.request.Request(f"http://127.0.0.1:{port}/api/analyze", data=b"{not json",
+                                       headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(r, timeout=10) as resp:
+                code, rep = resp.status, json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            code, rep = e.code, json.loads(e.read().decode(errors="replace") or "{}")
+        except Exception as e:  # noqa: BLE001
+            code, rep = 0, {"error": {"message": str(e)}}
+        check("malformed JSON -> 422 in standard error shape",
+              code == 422 and set(rep.get("error", {})) == {"field", "message"}, f"HTTP {code} {json.dumps(rep)[:90]}")
+        code, rep = req(port, "/api/analyze", {"mode": "demo", "text": "hello", "surprise_field": "x"})
+        check("unknown request field -> 422 (extra=forbid)", code == 422, f"HTTP {code} {json.dumps(rep)[:90]}")
+        code, rep = req(port, "/api/analyze", {"mode": "banana", "text": "hello"})
+        check("invalid mode -> 422", code == 422 and rep.get("error", {}).get("field") == "mode",
+              f"HTTP {code} {json.dumps(rep)[:90]}")
         code, rep = req(port, "/api/analyze", {"mode": "demo", "text": "x" * 6001})
         check("over MAX_INPUT_CHARS gives a helpful message", code == 422
               and "shorten" in rep.get("error", {}).get("message", ""), str(rep.get("error", ""))[:90])

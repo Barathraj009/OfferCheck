@@ -2,6 +2,7 @@
 uniform error type, JSON fetch helper, and the standard verification-result shape."""
 from __future__ import annotations
 import asyncio
+import json as json_lib
 import logging
 import time
 from datetime import datetime, timezone
@@ -47,8 +48,54 @@ _CB_COOLDOWN = 60.0
 _cb: dict[str, dict] = {}  # host -> {"fails": int, "open_until": float}
 
 
+# Hardening limits for every outbound provider call:
+#  * response bodies are streamed and capped (a broken/compromised provider cannot
+#    exhaust memory);
+#  * redirects are bounded;
+#  * a hard total deadline (`timeout * 2 + 1`) catches slow-drip responses that
+#    would otherwise reset the per-read timeout forever.
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+MAX_REDIRECTS = 5
+
+
 def _host(url: str) -> str:
     return url.split("/")[2] if "//" in url else url
+
+
+async def _request(method: str, url: str, *, params=None, headers=None, json=None, timeout: float = 8.0) -> tuple[int, bytes]:
+    """Transport-level request with bounded redirects, a hard total deadline and a
+    capped response body. Returns (status_code, body). Raises SourceError for every
+    transport failure; status-code handling belongs to the callers."""
+    import httpx  # lazy so the pure-logic modules/tests need no third-party packages
+    host = _host(url)
+    _cb_check(host)
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, max_redirects=MAX_REDIRECTS) as client:
+            async with asyncio.timeout(timeout * 2 + 1):
+                async with client.stream(method, url, params=params, headers=headers, json=json) as r:
+                    declared = r.headers.get("content-length", "")
+                    if declared.isdigit() and int(declared) > MAX_RESPONSE_BYTES:
+                        raise SourceError("The service returned a response larger than we accept.", "too_large")
+                    chunks: list[bytes] = []
+                    total = 0
+                    async for chunk in r.aiter_bytes():
+                        total += len(chunk)
+                        if total > MAX_RESPONSE_BYTES:
+                            raise SourceError("The service returned a response larger than we accept.", "too_large")
+                        chunks.append(chunk)
+                    return r.status_code, b"".join(chunks)
+    except SourceError:
+        raise
+    except (TimeoutError, httpx.TimeoutException):
+        _cb_record(host, False)
+        raise SourceError("The service did not respond in time.", "timeout")
+    except httpx.TooManyRedirects:
+        _cb_record(host, False)
+        raise SourceError("The service sent too many redirects.", "network")
+    except httpx.HTTPError as exc:
+        _cb_record(host, False)
+        log.warning("network error url=%s err=%s", url.split("?")[0], type(exc).__name__)
+        raise SourceError("The service could not be reached.", "network")
 
 
 def _cb_check(host: str) -> None:
@@ -93,33 +140,22 @@ async def cached(key: str, ttl: int, factory: Callable[[], Awaitable[Any]]):
 async def request_json(method: str, url: str, *, params=None, headers=None, json=None, timeout: float = 8.0):
     """HTTP helper. Raises SourceError with a human-readable reason for every failure mode.
     Consults and updates the per-host circuit breaker."""
-    import httpx  # lazy so the pure-logic modules/tests need no third-party packages
     host = _host(url)
-    _cb_check(host)
-    try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            r = await client.request(method, url, params=params, headers=headers, json=json)
-    except httpx.TimeoutException:
-        _cb_record(host, False)
-        raise SourceError("The service did not respond in time.", "timeout")
-    except httpx.HTTPError as exc:
-        _cb_record(host, False)
-        log.warning("network error url=%s err=%s", url.split("?")[0], type(exc).__name__)
-        raise SourceError("The service could not be reached.", "network")
-    if r.status_code == 429:
+    status, body = await _request(method, url, params=params, headers=headers, json=json, timeout=timeout)
+    if status == 429:
         _cb_record(host, False)
         raise SourceError("Rate limit reached for this free service. Try again later.", "rate_limited")
-    if r.status_code == 404:
+    if status == 404:
         _cb_record(host, True)  # a definitive answer, not a failing host
         raise SourceError("Not found.", "not_found")
-    if r.status_code in (401, 403):
+    if status in (401, 403):
         _cb_record(host, False)
         raise SourceError("The service rejected the request (missing/invalid API key or plan restriction).", "auth")
-    if r.status_code >= 400:
+    if status >= 400:
         _cb_record(host, False)
-        raise SourceError(f"The service returned HTTP {r.status_code}.", "http")
+        raise SourceError(f"The service returned HTTP {status}.", "http")
     try:
-        data = r.json()
+        data = json_lib.loads(body)
     except ValueError:
         _cb_record(host, False)
         log.warning("malformed JSON from %s", url.split("?")[0])
@@ -130,26 +166,19 @@ async def request_json(method: str, url: str, *, params=None, headers=None, json
 
 async def request_text(url: str, *, timeout: float = 8.0) -> str:
     """Plain-text GET (used for the OpenPhish feed). Same error semantics and circuit breaker."""
-    import httpx
     host = _host(url)
-    _cb_check(host)
-    try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            r = await client.get(url)
-    except httpx.TimeoutException:
-        _cb_record(host, False)
-        raise SourceError("The service did not respond in time.", "timeout")
-    except httpx.HTTPError:
-        _cb_record(host, False)
-        raise SourceError("The service could not be reached.", "network")
-    if r.status_code == 429:
+    status, body = await _request("GET", url, timeout=timeout)
+    if status == 429:
         _cb_record(host, False)
         raise SourceError("Rate limit reached for this free service. Try again later.", "rate_limited")
-    if r.status_code >= 400:
+    if status >= 400:
         _cb_record(host, False)
-        raise SourceError(f"The service returned HTTP {r.status_code}.", "http")
+        raise SourceError(f"The service returned HTTP {status}.", "http")
     _cb_record(host, True)
-    return r.text
+    try:
+        return body.decode("utf-8")
+    except UnicodeDecodeError:
+        return body.decode("utf-8", errors="replace")
 
 
 def now_iso() -> str:

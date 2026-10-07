@@ -6,6 +6,7 @@ import re
 import time
 from collections import defaultdict
 from pathlib import Path
+from typing import Literal
 from fastapi import FastAPI, File, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -52,12 +53,14 @@ async def request_validation_handler(request: Request, exc: RequestValidationErr
 
 
 class AnalyzeIn(BaseModel):
+    model_config = {"extra": "forbid"}  # unknown fields are a client bug, not silently dropped
+
     text: str = Field("", max_length=20000)
     url: str = Field("", max_length=2100)
     token_name: str = Field("", max_length=200)
     contract_address: str = Field("", max_length=200)
     chain: str = Field("", max_length=30)
-    mode: str = Field("demo", max_length=10)
+    mode: Literal["demo", "live"] = "demo"
     demo_scenario: str | None = Field(None, max_length=40)
     language: str = Field("en", max_length=5)
 
