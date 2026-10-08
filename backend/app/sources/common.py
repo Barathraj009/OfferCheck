@@ -86,22 +86,24 @@ async def _request(method: str, url: str, *, params=None, headers=None, json=Non
                     return r.status_code, b"".join(chunks)
     except SourceError:
         raise
-    except (TimeoutError, httpx.TimeoutException):
+    except (TimeoutError, httpx.TimeoutException) as exc:
         _cb_record(host, False)
-        raise SourceError("The service did not respond in time.", "timeout")
+        log.warning("Timeout on %s %s: %s", method, url, exc)
+        raise SourceError(f"The service at {host} did not respond in time.", "timeout")
     except httpx.TooManyRedirects:
         _cb_record(host, False)
-        raise SourceError("The service sent too many redirects.", "network")
+        log.warning("Too many redirects on %s %s", method, url)
+        raise SourceError(f"The service at {host} sent too many redirects.", "network")
     except httpx.HTTPError as exc:
         _cb_record(host, False)
-        log.warning("network error url=%s err=%s", url.split("?")[0], type(exc).__name__)
-        raise SourceError("The service could not be reached.", "network")
+        log.warning("Network error on %s %s: %s", method, url, exc)
+        raise SourceError(f"Could not connect to {host} ({type(exc).__name__}).", "network")
 
 
 def _cb_check(host: str) -> None:
     st = _cb.get(host)
     if st and st["open_until"] > time.time():
-        raise SourceError("This source is being skipped for a moment after repeated failures. Try again shortly.", "circuit_open")
+        raise SourceError(f"This source ({host}) is being skipped for a moment after repeated failures. Try again shortly.", "circuit_open")
 
 
 def _cb_record(host: str, ok: bool) -> None:
@@ -144,22 +146,28 @@ async def request_json(method: str, url: str, *, params=None, headers=None, json
     status, body = await _request(method, url, params=params, headers=headers, json=json, timeout=timeout)
     if status == 429:
         _cb_record(host, False)
-        raise SourceError("Rate limit reached for this free service. Try again later.", "rate_limited")
+        body_snip = body.decode("utf-8", errors="replace")[:200]
+        log.warning("Rate limit on %s %s: HTTP 429 body=%s", method, url, body_snip)
+        raise SourceError(f"Rate limit reached for {host} (HTTP 429).", "rate_limited")
     if status == 404:
         _cb_record(host, True)  # a definitive answer, not a failing host
         raise SourceError("Not found.", "not_found")
     if status in (401, 403):
         _cb_record(host, False)
-        raise SourceError("The service rejected the request (missing/invalid API key or plan restriction).", "auth")
+        body_snip = body.decode("utf-8", errors="replace")[:200]
+        log.warning("Auth error on %s %s: HTTP %s body=%s", method, url, status, body_snip)
+        raise SourceError(f"The service at {host} rejected the request (HTTP {status}).", "auth")
     if status >= 400:
         _cb_record(host, False)
-        raise SourceError(f"The service returned HTTP {status}.", "http")
+        body_snip = body.decode("utf-8", errors="replace")[:200]
+        log.warning("HTTP %s on %s %s: body=%s", status, method, url, body_snip)
+        raise SourceError(f"The service at {host} returned HTTP {status}.", "http")
     try:
         data = json_lib.loads(body)
     except ValueError:
         _cb_record(host, False)
         log.warning("malformed JSON from %s", url.split("?")[0])
-        raise SourceError("The service returned a malformed response.", "malformed")
+        raise SourceError(f"The service at {host} returned a malformed response.", "malformed")
     _cb_record(host, True)
     return data
 

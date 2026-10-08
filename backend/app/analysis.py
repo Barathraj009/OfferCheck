@@ -10,12 +10,21 @@ from .llm import LANGS, extract_claims_llm, summarize_llm
 from .scoring import CHECKS, assess
 from .sources.chain import check_explorer, check_liquidity, check_security
 from .sources.common import SourceError, now_iso, result
+from .sources.entity import check_entity_and_web
 from .sources.market import check_market
 from .sources.web import check_domain, check_web_safety
 from .validators import CHAINS, ValidationFailure, normalize_url, sanitize_text, validate_address
 
 log = logging.getLogger("scamcheck")
-SRC = {"market": "CoinGecko", "explorer": "Contract verification", "security": "GoPlus Security", "liquidity": "DexScreener", "domain": "RDAP (rdap.org)", "webSafety": "Threat-feed check"}
+SRC = {
+    "entity": "Web & Entity Intelligence",
+    "market": "CoinGecko",
+    "explorer": "Contract verification",
+    "security": "GoPlus Security",
+    "liquidity": "DexScreener",
+    "domain": "RDAP (rdap.org)",
+    "webSafety": "Threat-feed check"
+}
 
 
 def _na(cid, reason):
@@ -97,6 +106,8 @@ async def run_analysis(p: dict, s) -> dict:
         plan[cid] = ("skip", "No contract address provided.") if not addr else ("run", fn) if c_ok else ("unavail", f"The network '{claims['chain']}' cannot be verified yet.")
     for cid, fn in (("domain", check_domain), ("webSafety", check_web_safety)):
         plan[cid] = ("run", fn) if site else ("skip", "No website provided.")
+    has_entity_signal = bool(claims.get("entity_name") or claims.get("seller_identity") or claims.get("asset_name") or site)
+    plan["entity"] = ("run", lambda cl, st: check_entity_and_web(cl, site, st)) if has_entity_signal else ("skip", "No company name or website provided.")
 
     checks: dict[str, dict] = {}
     tasks = {}

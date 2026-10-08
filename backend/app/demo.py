@@ -20,6 +20,7 @@ SCENARIOS = {
             "market": lambda: _r("market", "CoinGecko", "verified", "Bitcoin found (demo prices).", {"id": "bitcoin", "name": "Bitcoin", "symbol": "BTC", "prices": {"usd": 65000, "inr": 5400000, "eur": 60000, "gbp": 51000}, "market_cap_usd": 1.28e12, "volume_24h_usd": 2.5e10}),
             "domain": lambda: _r("domain", "RDAP", "verified", "Registered 4 days ago.", {"domain": "btc-flash-sale.example", "registered": "demo-date", "age_days": 4}),
             "webSafety": lambda: _r("webSafety", "Safe Browsing", "unavailable", "Unavailable.", reason="Not simulated in this scenario - shows how a missing check lowers confidence."),
+            "entity": lambda: _r("entity", "Web & Entity Intelligence", "verified", "Domain checked: btc-flash-sale.example.", {"entity": None, "entity_verified": False, "official_domain_match": False, "impersonation_detected": False}),
         }},
     "suspicious-token": {
         "title": "Demo B - New token with risky contract",
@@ -33,6 +34,7 @@ SCENARIOS = {
             "liquidity": lambda: _r("liquidity", "DexScreener", "verified", "1 pair, $3,200 liquidity.", {"pair_count": 1, "total_liquidity_usd": 3200, "volume_24h_usd": 1800, "oldest_pair_age_days": 3, "buys_24h": 40, "sells_24h": 6}),
             "domain": lambda: _r("domain", "RDAP", "verified", "Registered 6 days ago.", {"domain": "moonrocket-token.example", "registered": "demo-date", "age_days": 6}),
             "webSafety": lambda: _r("webSafety", "Safe Browsing", "verified", "No match.", {"threats": []}),
+            "entity": lambda: _r("entity", "Web & Entity Intelligence", "verified", "Domain checked: moonrocket-token.example.", {"entity": None, "entity_verified": False, "official_domain_match": False, "impersonation_detected": False}),
         }},
     "normal-offer": {
         "title": "Demo C - Ordinary-looking offer",
@@ -43,6 +45,7 @@ SCENARIOS = {
             "market": lambda: _r("market", "CoinGecko", "verified", "Ethereum found (demo prices).", {"id": "ethereum", "name": "Ethereum", "symbol": "ETH", "prices": {"usd": 3200, "inr": 268000, "eur": 2950, "gbp": 2500}, "market_cap_usd": 3.8e11, "volume_24h_usd": 1.4e10}),
             "domain": lambda: _r("domain", "RDAP", "verified", "Registered 3,900 days ago.", {"domain": "trusted-exchange.example", "registered": "demo-date", "age_days": 3900}),
             "webSafety": lambda: _r("webSafety", "Safe Browsing", "verified", "No match.", {"threats": []}),
+            "entity": lambda: _r("entity", "Web & Entity Intelligence", "verified", "Domain checked: trusted-exchange.example.", {"entity": None, "entity_verified": False, "official_domain_match": False, "impersonation_detected": False}),
         }},
     "too-vague": {
         "title": "Demo D - Too little to verify",
@@ -63,6 +66,7 @@ SCENARIOS = {
             "liquidity": lambda: _r("liquidity", "DexScreener", "verified", "2 pairs, $60,000 liquidity.", {"pair_count": 2, "total_liquidity_usd": 60000, "volume_24h_usd": 12000, "oldest_pair_age_days": 14, "buys_24h": 90, "sells_24h": 40}),
             "domain": lambda: _r("domain", "RDAP", "verified", "Registered 12 days ago.", {"domain": "moonvault-offer.example", "registered": "demo-date", "age_days": 12}),
             "webSafety": lambda: _r("webSafety", "Threat feed", "unavailable", "Unavailable.", reason="The threat feed could not be loaded (simulated outage)."),
+            "entity": lambda: _r("entity", "Web & Entity Intelligence", "verified", "Domain checked: moonvault-offer.example.", {"entity": None, "entity_verified": False, "official_domain_match": False, "impersonation_detected": False}),
         }},
 }
 

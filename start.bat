@@ -3,10 +3,13 @@ REM Start OfferCheck (dev): backend API + frontend dev server, opens browser
 cd /d %~dp0
 
 set PYTHON=python
+if exist "%~dp0backend\.venv\Scripts\python.exe" (
+    set PYTHON="%~dp0backend\.venv\Scripts\python.exe"
+)
 set NODE=node
 
-echo [1/4] Starting backend API on http://127.0.0.1:8081
-start "OfferCheck-Backend" cmd /c "cd /d %~dp0backend && %PYTHON% -m uvicorn app.main:app --host 127.0.0.1 --port 8081 --log-level info"
+echo [1/4] Starting backend API on http://127.0.0.1:8000
+start "OfferCheck-Backend" cmd /c "cd /d %~dp0backend && %PYTHON% -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --log-level info"
 
 timeout /t 3 /nobreak >nul
 

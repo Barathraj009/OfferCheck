@@ -60,6 +60,7 @@ function FindingCard({ f }: { f: Finding }) {
 
 function claimRows(c: Claims): [string, string][] {
   const rows: [string, string | null][] = [
+    ["Company / Brand", c.entity_name ?? null],
     ["Asset", c.asset_name ? `${c.asset_name}${c.asset_symbol ? ` (${c.asset_symbol})` : ""}` : null],
     ["Price asked", c.claimed_price != null ? `${c.quoted_currency ?? ""} ${c.claimed_price.toLocaleString("en-IN")}${c.quantity ? ` for ${c.quantity} unit(s)` : c.quantity_assumed ? " (quantity not stated; 1 unit assumed)" : ""}` : null],
     ["Market price the seller states", c.claimed_market_price != null ? `${c.quoted_currency ?? ""} ${c.claimed_market_price.toLocaleString("en-IN")}` : null],
@@ -154,7 +155,14 @@ export default function ReportPage({ report: rProp, reportId, onNew }: { report:
 
       <section aria-labelledby="overall" className="mt-6 grid gap-4 md:grid-cols-[1.4fr_1fr]">
         <div className={`card p-5 ${st.bg}`}>
-          <h2 id="overall" className="text-base font-semibold text-muted">Overall result</h2>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 id="overall" className="text-base font-semibold text-muted">Overall result</h2>
+            {r.risk.outcome && (
+              <span className={`chip text-xs font-semibold ${r.risk.outcome === "verified-legit" ? "bg-okay text-white" : r.risk.outcome === "suspicious" ? "bg-signal text-white" : "bg-ground text-ink border border-rule"}`}>
+                {r.risk.outcome_label ?? (r.risk.outcome === "verified-legit" ? "Verified Legitimate" : r.risk.outcome === "suspicious" ? "Suspicious" : "Could Not Verify")}
+              </span>
+            )}
+          </div>
           {r.risk.insufficient_evidence ? (
             <p className={`mt-1 font-display text-3xl font-bold ${st.text}`}>Not enough evidence</p>
           ) : (

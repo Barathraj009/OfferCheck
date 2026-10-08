@@ -32,6 +32,9 @@ PHRASE = {
     "REFERRAL_MODEL": "the offer pays for referrals", "URGENCY": "the seller applies time pressure",
     "SECRETS_REQUESTED": "secret credentials are mentioned", "NEW_DOMAIN": "the website was registered very recently",
     "MALICIOUS_SITE": "the website is on a danger list",
+    "OFFICIAL_ENTITY_VERIFIED": "the domain matches the verified official organization",
+    "BRAND_IMPERSONATION": "the offer claims to represent a recognized brand but uses an unofficial domain",
+    "WEB_SCAM_ALERT": "web intelligence flagged this offer as suspicious",
 }
 
 

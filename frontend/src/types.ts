@@ -60,6 +60,7 @@ export interface Claims {
   limited_time: boolean;
   requests_secrets: boolean;
   seller_identity: string | null;
+  entity_name?: string | null;
   website_url: string | null;
   other_flags: string[];
 }
@@ -72,7 +73,15 @@ export interface Report {
   extraction: { method: string; llm_configured: boolean; llm_provider?: string | null; notes: string[] };
   checks: Check[];
   findings: Finding[];
-  risk: { score: number; raw_points: number; level: string; level_key: string; insufficient_evidence: boolean };
+  risk: {
+    score: number;
+    raw_points: number;
+    level: string;
+    level_key: string;
+    insufficient_evidence: boolean;
+    outcome?: "verified-legit" | "suspicious" | "could-not-verify";
+    outcome_label?: string;
+  };
   confidence: { score: number; level: "High" | "Medium" | "Low"; reasons: string[] };
   coverage: {
     available: number;

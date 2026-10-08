@@ -31,7 +31,7 @@ MARKET_WORDS = ("market", "worth", "normally", "usually", "instead of", "actual"
 RETURN_WORDS = ("return", "profit", "roi", "interest", "gain", "growth", "yield", "earn", "income", "double", "triple")
 
 FLAGS = {
-    "guaranteed_language": ("guarantee", "risk-free", "risk free", "no risk", "100% safe", "sure profit", "assured", "zero risk", "fixed return"),
+    "guaranteed_language": ("guaranteed", "guarantee", "risk-free", "risk free", "assured return", "100% safe", "zero risk", "sure profit"),
     "referral": ("refer ", "referral", "commission", "invite friends", "invite your friends", "bring friends", "downline", "recruit", "your team", "friends and family"),
     "urgency": ("hurry", "last chance", "only today", "today only", "act now", "expires", "slots left", "only 2 slots", "pay within", "immediately", "right now", "before the price", "hours left", "need cash", "urgent", "don't miss", "dont miss", "limited slots"),
     "limited_time": ("limited time", "limited offer", "limited slots", "limited period", "offer ends", "hours left", "ends today", "last day", "only a few"),
@@ -52,7 +52,7 @@ def empty_claims() -> dict:
             "quantity_assumed": False, "claimed_market_price": None, "promised_return_pct": None,
             "promised_multiplier": None, "return_period_days": None, "guaranteed_language": False,
             "referral": False, "urgency": False, "limited_time": False, "requests_secrets": False,
-            "seller_identity": None, "website_url": None, "other_flags": [], "phrases": {}, "extraction_method": "heuristic"}
+            "seller_identity": None, "entity_name": None, "website_url": None, "other_flags": [], "phrases": {}, "extraction_method": "heuristic"}
 
 
 def _num(s: str, mult: str | None) -> float:
@@ -133,9 +133,11 @@ def heuristic_extract(text: str) -> dict:
         c["quoted_currency"] = c["quoted_currency"] or market_p["cur"]
     syms = "|".join(rx for _, _, rx in KNOWN_ASSETS.values())
     q = re.search(r"(?<![\w.₹$])(\d[\d,]*(?:\.\d+)?)\s*(?:" + syms + r")", low)
+    promo_words = ("bonus", "reward", "cashback", "credit", "credits", "voucher", "gift", "salary", "stipend", "worth", "off", "discount", "fee", "free", "claim", "airdrop")
+    is_promo = any(re.search(r"\b" + w + r"\b", low) for w in promo_words)
     if q and not re.match(r"\s*x\b", low[q.end(1):q.end(1) + 3]):
         c["quantity"] = float(q.group(1).replace(",", ""))
-    elif offer_p and c["asset_name"] and not c["price_is_per_unit"]:
+    elif offer_p and c["asset_name"] and not c["price_is_per_unit"] and not is_promo:
         c["quantity_assumed"] = True  # "Bitcoin for 32 lakh" -> we assume 1 unit and say so
     # returns
     ret_pos = None
@@ -159,13 +161,18 @@ def heuristic_extract(text: str) -> dict:
     for flag, kws in FLAGS.items():
         for kw in kws:
             if kw in low:
+                if flag == "guaranteed_language":
+                    retail_guarantees = ("money-back", "money back", "satisfaction", "uptime", "sla", "delivery", "authentic", "authenticity", "price match", "quality")
+                    snippet = _snippet(text, kw).lower()
+                    if any(rg in snippet for rg in retail_guarantees):
+                        continue
                 c[flag] = True
                 c["phrases"][flag] = _snippet(text, kw)
                 break
     for label, kws in OTHER.items():
         if any(k in low for k in kws):
             c["other_flags"].append(label)
-    # identifiers
+    # identifiers & entities
     m = re.search(r"\b0x[a-fA-F0-9]{40}\b", text)
     if m:
         c["contract_address"] = m.group(0)
@@ -179,6 +186,17 @@ def heuristic_extract(text: str) -> dict:
     m = re.search(r"\b(?:i am|i'm|this is|my name is)\s+([A-Z][\w.]*(?:\s+[A-Z][\w.]*){0,3})", text)
     if m:
         c["seller_identity"] = m.group(1)[:60]
+    
+    # entity / company detection
+    known_corps = ("Google", "Apple", "Microsoft", "Amazon", "Meta", "Coinbase", "Binance", "Kraken", "Stripe", "PayPal", "Uniswap", "Aave", "Robinhood", "Revolut", "Fidelity")
+    for ent in known_corps:
+        if re.search(r"\b" + re.escape(ent.lower()) + r"\b", low):
+            c["entity_name"] = ent
+            break
+    if not c["entity_name"]:
+        em = re.search(r"\b(?:from|at|join|by|welcome to)\s+([A-Z][A-Za-z0-9]+(?:\s+[A-Z][A-Za-z0-9]+)*)\b", text)
+        if em and em.group(1).lower() not in ("telegram", "whatsapp", "our", "the", "my", "this", "us"):
+            c["entity_name"] = em.group(1)[:50]
     return c
 
 

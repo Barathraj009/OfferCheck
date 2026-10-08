@@ -75,18 +75,68 @@ async def ollama_status(s) -> dict:
 
 
 def _provider_order(s, status: dict) -> list[str]:
-    """Which LLM providers to try, in order. 'auto' = local first, then optional remote."""
+    """Which LLM providers to try, in order.
+    'auto' prefers Gemini (if key) -> local Ollama (if available) -> Anthropic (if key).
+    """
     if s.llm_provider == "none":
         return []
     want = []
-    if s.llm_provider in ("auto", "ollama"):
-        if status["available"] and status["model"]:
+    if s.llm_provider == "gemini":
+        if s.gemini_api_key:
+            want.append("gemini")
+        return want
+    if s.llm_provider == "ollama":
+        if status.get("available") and status.get("model"):
             want.append("ollama")
-    if s.llm_provider in ("auto", "anthropic") and s.anthropic_api_key:
-        want.append("anthropic")
-    if s.llm_provider == "ollama" and not want and not status["available"]:
-        return []  # explicitly local-only and no daemon: do not silently use a paid provider
+        return want
+    if s.llm_provider == "anthropic":
+        if s.anthropic_api_key:
+            want.append("anthropic")
+        return want
+    if s.llm_provider == "auto":
+        if s.gemini_api_key:
+            want.append("gemini")
+        if status.get("available") and status.get("model"):
+            want.append("ollama")
+        if s.anthropic_api_key:
+            want.append("anthropic")
     return want
+
+
+async def _gemini_call(s, system: str, user: str, max_tokens: int) -> str:
+    if not s.gemini_api_key:
+        raise SourceError("No GEMINI_API_KEY configured.", "no_key")
+    import asyncio
+
+    def _sync_call():
+        import google.generativeai as genai
+        genai.configure(api_key=s.gemini_api_key)
+        models_to_try = [s.gemini_model, "gemini-2.5-flash", "gemini-1.5-flash", "gemini-3.5-flash"]
+        seen = set()
+        models = [m for m in models_to_try if m and not (m in seen or seen.add(m))]
+        last_err = None
+        for model_name in models:
+            try:
+                # System instruction and generation config
+                model = genai.GenerativeModel(
+                    model_name=model_name,
+                    system_instruction=system,
+                    generation_config={"temperature": 0.0, "max_output_tokens": max_tokens}
+                )
+                response = model.generate_content(user)
+                txt = str(response.text or "").strip()
+                if txt:
+                    return txt
+            except Exception as e:
+                last_err = e
+                continue
+        raise last_err or RuntimeError("Gemini content generation failed")
+
+    try:
+        return await asyncio.to_thread(_sync_call)
+    except Exception as e:
+        log.warning("Gemini API call failed: %s", e)
+        raise SourceError(f"Gemini error: {str(e)[:200]}", "error")
 
 
 async def _ollama_call(s, system: str, user: str, max_tokens: int) -> str:
@@ -115,11 +165,17 @@ async def _chain_call(s, system: str, user: str, max_tokens: int) -> tuple[str, 
     status = await ollama_status(s)
     order = _provider_order(s, status)
     if not order:
-        raise SourceError("No LLM provider is configured (local Ollama or an API key).", "no_key")
+        raise SourceError("No LLM provider is configured (Gemini, local Ollama, or Anthropic).", "no_key")
     errs = []
     for name in order:
         try:
-            txt = await (_ollama_call if name == "ollama" else _anthropic_call)(s, system, user, max_tokens)
+            if name == "gemini":
+                fn = _gemini_call
+            elif name == "ollama":
+                fn = _ollama_call
+            else:
+                fn = _anthropic_call
+            txt = await fn(s, system, user, max_tokens)
             if txt.strip():
                 return txt, name
             errs.append(f"{name}: empty response")
@@ -155,7 +211,7 @@ def validate_llm_claims(obj) -> dict:
         out.pop("chain", None)
     if out.get("quoted_currency"):
         out["quoted_currency"] = out["quoted_currency"].upper()
-        if out["quoted_currency"] not in ("INR", "USD", "EUR", "GBP"):
+        if out["quoted_currency"] not in ("INR", "USD", "EUR", "GBP", "USDT", "USDC", "BTC", "ETH", "BNB"):
             out.pop("quoted_currency")
     # seller_identity must look like a person/company name, not a word the model echoed back
     if out.get("seller_identity") and not re.fullmatch(r"[A-Z][A-Za-z.'\-]{1,29}(?: [A-Z][A-Za-z.'\-]{1,29}){0,3}", out["seller_identity"]):

@@ -35,6 +35,8 @@ UPSCALE_MAX = 3.0
 _TESSERACT_CANDIDATES = (
     r"C:\Program Files\Tesseract-OCR\tesseract.exe",
     r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+    r"%LOCALAPPDATA%\Programs\Tesseract-OCR\tesseract.exe",
+    r"%PROGRAMDATA%\chocolatey\bin\tesseract.exe",
 )
 
 
@@ -59,8 +61,9 @@ def ensure_tesseract() -> str | None:
     exe = shutil.which("tesseract")
     if not exe:
         for cand in _TESSERACT_CANDIDATES:
-            if os.path.isfile(cand):
-                exe = cand
+            cand_expanded = os.path.expandvars(cand)
+            if os.path.isfile(cand_expanded):
+                exe = cand_expanded
                 break
     if exe:
         try:

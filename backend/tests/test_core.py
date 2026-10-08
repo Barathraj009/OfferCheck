@@ -39,9 +39,9 @@ class Core(unittest.TestCase):
         self.assertEqual(d["coverage"]["available"], 0)
         self.assertEqual(d["confidence"]["level"], "Low")
         e = run({"mode": "demo", "demo_scenario": "partial-verification"})
-        self.assertEqual(e["coverage"]["available"], 3)
+        self.assertEqual(e["coverage"]["available"], 4)
         self.assertEqual(len(e["coverage"]["unavailable"]), 3)
-        self.assertEqual(e["confidence"]["score"], 50)
+        self.assertEqual(e["confidence"]["score"], 60)
         self.assertEqual(e["confidence"]["level"], "Medium")
         self.assertEqual(e["risk"]["level_key"], "high")
         self.assertTrue(any("did not respond" in u["reason"] or "Rate limit" in u["reason"]
@@ -66,7 +66,7 @@ class Core(unittest.TestCase):
     def test_confidence_separate_from_risk(self):
         r = run({**demo.list_scenarios()[1]["inputs"], "mode": "demo", "demo_scenario": "suspicious-token"})
         self.assertEqual(r["risk"]["level_key"], "very_high")
-        self.assertEqual(r["coverage"]["available"], 5)
+        self.assertEqual(r["coverage"]["available"], 6)
         self.assertEqual(len(r["coverage"]["unavailable"]), 1)
 
     def test_validation(self):

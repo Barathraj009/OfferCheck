@@ -1,18 +1,12 @@
 import { Dispatch, FormEvent, SetStateAction, useState, useRef } from "react";
 import type { FieldError, FormState, Health } from "../types";
-import { getHealth } from "../api";
+import { ocrImage } from "../api";
 
 const LANGS = [
   { label: "English", speech: "en-IN", ocr: "eng", code: "en" },
   { label: "Hindi", speech: "hi-IN", ocr: "hin", code: "hi" },
   { label: "Tamil", speech: "ta-IN", ocr: "tam", code: "ta" },
 ];
-
-const SOURCE_LABEL: Record<string, string> = {
-  etherscan: "Etherscan (optional API key)",
-  safe_browsing: "Google Safe Browsing (optional)",
-  llm: "AI claim reading (free local Ollama)",
-};
 
 interface Props {
   form: FormState;
@@ -23,228 +17,389 @@ interface Props {
   onSubmit: (f: FormState) => void;
 }
 
-export default function Check({ form, setForm, error, onSubmit }: Props) {
-  // Primary text: first cell is the main input, additional cells are extra
+export default function Check({ form, setForm, healthErr, error, onSubmit }: Props) {
   const [textCells, setTextCells] = useState<string[]>([form.text || ""]);
   const [localErr, setLocalErr] = useState<string | null>(null);
+  const [infoMsg, setInfoMsg] = useState<string | null>(null);
+
+  // Voice state
   const [voiceBusy, setVoiceBusy] = useState(false);
-  const [voiceText, setVoiceText] = useState("");
-  const [showVoice, setShowVoice] = useState(false);
-  const [website, setWebsite] = useState(form.website || "");
-  const [tokenCont, setTokenCont] = useState(form.tokenCont || "");
-  const rec = useRef<any>(null);
+  const [voiceUploading, setVoiceUploading] = useState(false);
+  const mediaRecRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+
+  // OCR/PDF upload state
+  const [ocrBusy, setOcrBusy] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Optional fields
+  const [website, setWebsite] = useState(form.website || form.url || "");
+  const [tokenCont, setTokenCont] = useState(form.tokenCont || form.contract_address || form.token_name || "");
   const lang = LANGS.find((l) => l.code === form.lang) || LANGS[0];
 
   // ---- Text cell management ----
   const updateCell = (i: number, value: string) => {
     const next = [...textCells];
-    next[i] = value.trim();
+    next[i] = value;
     setTextCells(next);
   };
 
-  const addTextCell = () => {
+  const addTextCell = (initialText: string = "") => {
     if (textCells.length >= 10) return;
-    setTextCells([...textCells, ""]);
+    setTextCells([...textCells, initialText]);
   };
 
   const removeTextCell = (i: number) => {
-    if (textCells.length <= 1) return;
+    if (textCells.length <= 1) {
+      setTextCells([""]);
+      return;
+    }
     const next = textCells.filter((_, idx) => idx !== i);
     setTextCells(next);
-    // also clear form.text if we're removing the main cell
-    if (i === 0) setForm((f) => ({ ...f, text: next.join("\n\n") }));
   };
 
-  // ---- Voice input ----
+  // ---- Voice input (faster-whisper STT) ----
   const toggleVoice = async () => {
-    setVoiceBusy(!voiceBusy);
-    if (voiceBusy) { rec.current?.stop(); return; }
+    if (voiceBusy) {
+      // Stop recording
+      mediaRecRef.current?.stop();
+      return;
+    }
 
-    // Use Whisper STT backend: capture microphone audio, send to /api/whisper-transcribe
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 16000 },
+        audio: { echoCancellation: true, noiseSuppression: true },
       });
-      rec.current = stream;
 
-      const mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/wav" });
-      const chunks: Blob[] = [];
-      mediaRecorder.ondataavailable = (e) => chunks.push(e.data);
+      audioChunksRef.current = [];
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecRef.current = mediaRecorder;
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+
       mediaRecorder.onstop = async () => {
-        setVoiceBusy(true);
-        setShowVoice(true);
-        // Send recorded audio to Whisper backend
-        const formData = new FormData();
-        formData.append("file", chunks[0], "recording.wav");
-        const resp = await fetch("/api/whisper-transcribe", {
-          method: "POST",
-          body: formData,
-        });
-        if (!resp.ok) throw new Error("Whisper transcription failed");
-        const data = await resp.json();
-        setVoiceText(data.text || "");
+        // Stop audio tracks
+        stream.getTracks().forEach((track) => track.stop());
         setVoiceBusy(false);
-        setShowVoice(false);
+        setVoiceUploading(true);
+
+        try {
+          const blob = new Blob(audioChunksRef.current, { type: mediaRecorder.mimeType || "audio/webm" });
+          const formData = new FormData();
+          formData.append("file", blob, "recording.webm");
+
+          const resp = await fetch("/api/whisper-transcribe", {
+            method: "POST",
+            body: formData,
+          });
+
+          if (!resp.ok) {
+            let errorMsg = "";
+            try {
+              const errBody = await resp.json();
+              errorMsg = errBody?.error?.message || errBody?.detail || "";
+            } catch {
+              // non-JSON response
+            }
+            if (resp.status === 503) {
+              throw new Error(errorMsg || "Voice transcription (faster-whisper) is not available on this server. Please type the offer text directly.");
+            }
+            throw new Error(errorMsg || `Voice transcription server error (${resp.status}).`);
+          }
+
+          const data = await resp.json();
+          const transcribed = (data.text || "").trim();
+          if (transcribed) {
+            // Append or insert into text cells
+            setTextCells((prev) => {
+              if (prev.length === 1 && !prev[0].trim()) {
+                return [transcribed];
+              }
+              return [...prev, transcribed];
+            });
+            setInfoMsg("Voice message transcribed and added below. You can edit it before checking.");
+          } else {
+            setLocalErr("No clear speech detected in recording. Please try speaking closer to the mic.");
+          }
+        } catch (err: any) {
+          setLocalErr(`Voice transcription failed: ${err.message || "Please type the offer text instead."}`);
+        } finally {
+          setVoiceUploading(false);
+        }
       };
+
       mediaRecorder.start();
+      setVoiceBusy(true);
+      setLocalErr(null);
 
-      // Auto-stop after 10 seconds
-      const timeoutId = setTimeout(() => {
-        mediaRecorder.stop();
-        clearTimeout(timeoutId);
-      }, 10000);
-      return;
-    } catch (err) {
-      // Fall back to browser SpeechRecognition if mic fails
-      const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-      if (!SR) { setVoiceBusy(false); setLocalErr("Voice not supported - no microphone"); return; }
-      const r = new SR();
-      r.lang = lang.speech;
-      r.continuous = true;
-      r.interimResults = false;
-      r.onresult = (e: any) => {
-        let t = "";
-        for (let i = e.resultIndex; i < e.results.length; i++)
-          if (e.results[i].isFinal) t += e.results[i][0].transcript + " ";
-        setVoiceText(t);
-      };
-      r.onend = () => { setVoiceBusy(false); };
-      r.start();
+      // Auto-stop after 30 seconds
+      setTimeout(() => {
+        if (mediaRecorder.state === "recording") {
+          mediaRecorder.stop();
+        }
+      }, 30000);
+    } catch (err: any) {
+      setVoiceBusy(false);
+      setLocalErr("Microphone access denied or not supported in this browser.");
     }
   };
 
-  const checkWhisperAvailability = async (): Promise<boolean> => {
+  // ---- Image / PDF OCR Extraction ----
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    setOcrBusy(true);
+    setLocalErr(null);
+    setInfoMsg(null);
+
+    const validExtensions = [".png", ".jpg", ".jpeg", ".webp", ".bmp", ".pdf", ".tiff", ".tif"];
+    const validMimes = [
+      "image/png", "image/jpeg", "image/webp", "image/bmp", "image/tiff",
+      "application/pdf", "application/x-pdf"
+    ];
+
     try {
-      const resp = await fetch("/api/whisper/health", {
-        method: "GET",
-        headers: { "ngrok-skip-browser-warning": "1" },
-        timeout: 5000,
-      });
-      return resp.ok;
-    } catch {
-      return false;
+      const extractedList: string[] = [];
+      const fileErrors: string[] = [];
+
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const lowerName = file.name.toLowerCase();
+        const hasValidExt = validExtensions.some((ext) => lowerName.endsWith(ext));
+        const hasValidMime = file.type ? validMimes.includes(file.type) : true;
+
+        if (!hasValidExt && !hasValidMime) {
+          fileErrors.push(`"${file.name}": Unsupported format. Please upload PNG, JPG, WebP, or PDF.`);
+          continue;
+        }
+
+        if (file.size > 5 * 1024 * 1024) {
+          fileErrors.push(`"${file.name}": File exceeds the 5 MB limit (${(file.size / (1024 * 1024)).toFixed(1)} MB).`);
+          continue;
+        }
+
+        try {
+          const res = await ocrImage(file, lang.ocr);
+          if (res.text && res.text.trim()) {
+            extractedList.push(res.text.trim());
+          } else {
+            fileErrors.push(`"${file.name}": No readable text was detected. Ensure the document or screenshot has clear, visible text.`);
+          }
+        } catch (err: any) {
+          const msg = err?.message || "Failed to process file.";
+          fileErrors.push(`"${file.name}": ${msg}`);
+        }
+      }
+
+      if (extractedList.length > 0) {
+        setTextCells((prev) => {
+          const cleanPrev = prev.filter((p) => p.trim());
+          return [...cleanPrev, ...extractedList];
+        });
+        if (fileErrors.length > 0) {
+          setInfoMsg(`Extracted text from ${extractedList.length} file(s) and added below.`);
+          setLocalErr(`Some files could not be processed:\n• ` + fileErrors.join("\n• "));
+        } else {
+          setInfoMsg(`Extracted text from ${extractedList.length} file(s) and added below. Review and edit as needed.`);
+        }
+      } else {
+        if (fileErrors.length > 0) {
+          setLocalErr(fileErrors.join("\n"));
+        } else {
+          setLocalErr("No readable text found in the uploaded file(s). Please type the offer text directly.");
+        }
+      }
+    } catch (err: any) {
+      setLocalErr(err.message || "Document text extraction failed. Please type the offer text.");
+    } finally {
+      setOcrBusy(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
     }
   };
 
-const insertVoiceText = () => {
-    const t = voiceText.trim();
-    if (!t) return;
-    // Insert into the first (main) cell
-    setTextCells((prev) => {
-      const next = [...prev];
-      next[0] = (next[0] ? next[0] + " " : "") + t;
-      return next;
-    });
-    setVoiceText("");
-    setVoiceBusy(false);
-    setShowVoice(false);
-  };
-
+  // ---- Submit Offer ----
   function submit(e: FormEvent) {
     e.preventDefault();
-    // Combine all text cells
-    const combined = textCells.map((c) => c.trim()).filter(Boolean).join("\n\n");
-    // Also include website and token/contract if provided
+    const cleanCells = textCells.map((c) => c.trim()).filter(Boolean);
+    const combined = cleanCells.join("\n\n");
     const websiteClean = website.trim();
     const tokenClean = tokenCont.trim();
-    
-    // Build the full input string for submission
-    const parts: string[] = [];
-    if (combined) parts.push(combined);
-    if (websiteClean) parts.push("WEBSITE: " + websiteClean);
-    if (tokenClean) parts.push("TOKEN/CONTRACT: " + tokenClean);
-    
-    const fullInput = parts.join("\n\n");
+
     if (!combined && !websiteClean && !tokenClean) {
-      setLocalErr("Enter at least one offer message"); return;
+      setLocalErr("Enter at least one offer message, website, or token address.");
+      return;
     }
     setLocalErr(null);
-    // Pass the full text to onSubmit - the backend will parse it
-    setForm({ ...form, text: fullInput });
-    onSubmit({ ...form, text: fullInput });
+
+    // Distinguish token name vs contract address if user typed 0x...
+    let contractAddr = "";
+    let tokenName = "";
+    if (tokenClean.startsWith("0x") || tokenClean.length > 30) {
+      contractAddr = tokenClean;
+    } else {
+      tokenName = tokenClean;
+    }
+
+    const nextForm: FormState = {
+      ...form,
+      text: combined,
+      url: websiteClean,
+      token_name: tokenName,
+      contract_address: contractAddr,
+      website: websiteClean,
+      tokenCont: tokenClean,
+      mode: "live", // User-submitted check runs live verification
+    };
+
+    setForm(nextForm);
+    onSubmit(nextForm);
   }
 
   const generalErr = localErr ?? (error && !error.field ? error.message : undefined);
 
   return (
     <main id="main" tabIndex={-1} className="mx-auto max-w-3xl px-4 py-10">
-      <h1 className="text-3xl font-bold md:text-4xl">Verify Before You Trust</h1>
-      <p className="mt-2 text-muted">Give OfferCheck whatever you have. We'll figure out what needs to be checked.</p>
+      <h1 className="text-3xl font-bold md:text-4xl text-ink">Verify Before You Trust</h1>
+      <p className="mt-2 text-muted">
+        Give OfferCheck whatever you have (text, screenshot, voice, website, or contract address). We'll verify the claims against blockchain, market, liquidity, and security data.
+      </p>
+
+      {healthErr && (
+        <div role="alert" className="mt-4 rounded-md border border-caution/40 bg-caution-tint p-3 text-sm text-ink">
+          <strong>Backend connection warning:</strong> {healthErr}
+        </div>
+      )}
+
       <form onSubmit={submit} noValidate className="mt-6 space-y-6">
+        {/* Section 1: Offer Text & Messages */}
         <section aria-labelledby="s1" className="space-y-4">
-          <h2 id="s1" className="text-xl font-semibold">What offer did you receive?</h2>
+          <div className="flex items-center justify-between">
+            <h2 id="s1" className="text-xl font-semibold text-ink">What offer did you receive?</h2>
+            <div className="flex items-center gap-2">
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={handleFileUpload}
+                multiple
+                accept="image/png,image/jpeg,image/webp,application/pdf"
+                className="hidden"
+                id="file-upload"
+              />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={ocrBusy}
+                className="btn-ghost text-sm flex items-center gap-1.5"
+                title="Upload screenshot or PDF to extract text"
+              >
+                {ocrBusy ? "⏳ Reading file…" : "📷 Upload Screenshot / PDF"}
+              </button>
+              <button
+                type="button"
+                onClick={toggleVoice}
+                disabled={voiceUploading}
+                className={`btn-ghost text-sm flex items-center gap-1.5 ${voiceBusy ? "bg-signal-tint text-signal border-signal" : ""}`}
+                title="Record audio of the offer"
+              >
+                {voiceBusy ? "⏹ Stop Recording" : voiceUploading ? "⏳ Transcribing…" : "🎙 Speak"}
+              </button>
+            </div>
+          </div>
+
+          {infoMsg && (
+            <p className="rounded-md border border-okay/40 bg-okay-tint p-3 text-sm text-okay">
+              ✓ {infoMsg}
+            </p>
+          )}
+
           {textCells.map((c, i) => (
             <div key={i} className="space-y-2">
-              <textarea
-                rows={4}
-                className="field"
-                value={c}
-                onChange={(e) => updateCell(i, e.target.value)}
-                placeholder="Paste the offer message, promoter reply, or additional text"
-                aria-invalid={i === 0 && !!localErr}
-                aria-describedby={i === 0 && !!localErr ? "text-err text-hint" : "text-hint"}
-              />
+              <div className="relative">
+                <textarea
+                  rows={4}
+                  className="field w-full"
+                  value={c}
+                  onChange={(e) => updateCell(i, e.target.value)}
+                  placeholder={
+                    i === 0
+                      ? "Paste the offer message, pitch, WhatsApp/Telegram chat, promise, or details here..."
+                      : `Additional promoter reply or chat message #${i + 1}...`
+                  }
+                  aria-invalid={i === 0 && !!localErr}
+                />
+              </div>
               {textCells.length > 1 && (
-                <button type="button" className="btn-ghost" onClick={() => removeTextCell(i)}>
-                  Remove
-                </button>
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    className="text-xs text-signal hover:underline"
+                    onClick={() => removeTextCell(i)}
+                  >
+                    ✕ Remove this text
+                  </button>
+                </div>
               )}
             </div>
           ))}
+
           {textCells.length < 10 && (
-            <button type="button" className="btn-ghost" onClick={addTextCell}>
-              + Add another text
+            <button
+              type="button"
+              className="btn-ghost text-sm"
+              onClick={() => addTextCell("")}
+            >
+              + Add another text message
             </button>
           )}
         </section>
 
-        <section aria-labelledby="s2" className="space-y-2">
-          <h2 id="s2" className="text-xl font-semibold">Optional details (not required)</h2>
-          <div className="grid gap-2">
-            <button type="button" className="btn-ghost" onClick={toggleVoice}>
-              {voiceBusy ? "Listening…" : "🎙 Speak"}
-            </button>
-            {voiceBusy && (
-              <p className="text-xs text-muted mt-1">Speak the offer, then click Cancel</p>
-            )}
-            {showVoice && (
-              <button type="button" className="btn-ghost" onClick={() => setShowVoice(false)}>
-                Cancel
-              </button>
-            )}
-          </div>
+        {/* Section 2: Optional fields */}
+        <section aria-labelledby="s2" className="space-y-3 pt-2 border-t border-rule">
+          <h2 id="s2" className="text-lg font-semibold text-ink">Optional details (if available)</h2>
+          
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div>
+              <label className="block text-xs font-medium text-muted mb-1">
+                Website URL (optional)
+              </label>
+              <input
+                type="url"
+                className="field w-full text-sm"
+                value={website}
+                onChange={(e) => setWebsite(e.target.value)}
+                placeholder="https://example.com/offer"
+              />
+            </div>
 
-          <div className="mt-3">
-            <label className="text-xs text-muted">Website (optional)</label>
-            <input
-              type="url"
-              className="field w-full"
-              value={website}
-              onChange={(e) => setWebsite(e.target.value)}
-              placeholder="https://example.com/offer"
-              aria-invalid={!!localErr}
-            />
-            <label className="text-xs text-muted mt-1">Token / Contract (optional)</label>
-            <input
-              type="text"
-              className="field w-full"
-              value={tokenCont}
-              onChange={(e) => setTokenCont(e.target.value)}
-              placeholder="Token symbol or contract address (e.g. BTC, ETH, 0x...)"
-              aria-invalid={!!localErr}
-            />
+            <div>
+              <label className="block text-xs font-medium text-muted mb-1">
+                Token Name or Contract Address (optional)
+              </label>
+              <input
+                type="text"
+                className="field w-full text-sm"
+                value={tokenCont}
+                onChange={(e) => setTokenCont(e.target.value)}
+                placeholder="e.g. BTC, PEPE, or 0x..."
+              />
+            </div>
           </div>
         </section>
 
         {generalErr && (
-          <p role="alert" className="rounded-md border border-signal/40 bg-signal-tint p-3 text-signal">
+          <div role="alert" className="rounded-md border border-signal/40 bg-signal-tint p-3 text-signal text-sm whitespace-pre-line">
             {generalErr}
-          </p>
+          </div>
         )}
 
-        <button type="submit" className="btn-primary w-full text-lg sm:w-auto">
-          CHECK OFFER
-        </button>
+        <div className="pt-2">
+          <button type="submit" className="btn-primary w-full text-lg py-3">
+            CHECK OFFER
+          </button>
+        </div>
       </form>
     </main>
   );

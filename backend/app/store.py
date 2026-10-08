@@ -16,6 +16,7 @@ PRIVACY DECISION (documented in README/PROJECT_STATUS):
 from __future__ import annotations
 
 import json
+import logging
 import re
 import secrets
 import sqlite3
@@ -23,13 +24,17 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Set by tests to a temp location.
-DB_PATH = Path(__file__).resolve().parents[1] / "data" / "reports.db"
+from .config import get_settings
+
+log = logging.getLogger("scamcheck.store")
+
+DEFAULT_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "reports.db"
+DB_PATH = DEFAULT_DB_PATH
 
 MAX_REPORTS = 1000          # bounded storage: oldest reports are pruned
 MAX_PAYLOAD_BYTES = 300_000  # one report is ~20-60KB; this is a generous ceiling
 LIST_LIMIT = 50
-ID_RE = re.compile(r"^[A-Za-z0-9_-]{10,32}$")
+ID_RE = re.compile(r"^[A-Za-z0-9_-]{10,36}$")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS reports (
@@ -50,6 +55,21 @@ CREATE TABLE IF NOT EXISTS reports (
 
 class InvalidReport(ValueError):
     """The submitted document is not a report we are willing to store."""
+
+
+def _get_supabase_client():
+    if DB_PATH != DEFAULT_DB_PATH:
+        return None
+    s = get_settings()
+    if not (s.supabase_url and (s.supabase_anon_key or s.supabase_service_key)):
+        return None
+    try:
+        from supabase import create_client
+        key = s.supabase_service_key or s.supabase_anon_key
+        return create_client(s.supabase_url, key)
+    except Exception as e:
+        log.warning("Supabase client init failed: %s", e)
+        return None
 
 
 @contextmanager
@@ -80,7 +100,7 @@ def _headline(report: dict) -> str:
 
 
 def save(report: dict) -> str:
-    """Validate and persist a report; returns its unguessable id."""
+    """Validate and persist a report to SQLite and optionally Supabase; returns its unguessable id."""
     if not isinstance(report, dict):
         raise InvalidReport("not an object")
     risk = report.get("risk")
@@ -98,16 +118,39 @@ def save(report: dict) -> str:
         raise InvalidReport("too large")
     rid = secrets.token_urlsafe(12)
     conf = report.get("confidence") or {}
+    headline = _headline(report)
+    now_ts = _now()
+
+    # 1. Always save to local SQLite
     with _db() as conn:
         conn.execute(
             "INSERT INTO reports (id, created_at, mode, is_demo, risk_score, risk_level,"
             " confidence_score, confidence_level, headline, payload) VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (rid, _now(), str(report.get("mode", ""))[:10], int(bool(report.get("is_demo"))),
+            (rid, now_ts, str(report.get("mode", ""))[:10], int(bool(report.get("is_demo"))),
              risk["score"], risk["level"][:40], int(conf.get("score") or 0), str(conf.get("level") or "")[:20],
-             _headline(report), payload))
+             headline, payload))
         # bounded storage: keep only the newest MAX_REPORTS
         conn.execute("DELETE FROM reports WHERE seq NOT IN"
                      " (SELECT seq FROM reports ORDER BY seq DESC LIMIT ?)", (MAX_REPORTS,))
+
+    # 2. Attempt sync to Supabase if configured (graceful failure)
+    sb = _get_supabase_client()
+    if sb:
+        try:
+            sb.table("reports").insert({
+                "mode": str(report.get("mode", "demo")),
+                "is_demo": bool(report.get("is_demo")),
+                "risk_score": risk["score"],
+                "risk_level": risk["level"],
+                "confidence_score": int(conf.get("score") or 0),
+                "confidence_level": str(conf.get("level") or "Low"),
+                "headline": headline,
+                "payload": report,
+            }).execute()
+            log.info("Report synced to Supabase successfully")
+        except Exception as e:
+            log.info("Supabase sync skipped/failed (using local store): %s", e)
+
     return rid
 
 
@@ -117,15 +160,32 @@ def get(rid: str) -> dict | None:
         return None
     with _db() as conn:
         row = conn.execute("SELECT payload FROM reports WHERE id = ?", (rid,)).fetchone()
-    if not row:
-        return None
-    try:
-        data = json.loads(row["payload"])
-    except ValueError:
-        return None
-    if isinstance(data, dict):
-        data["report_id"] = rid
-    return data
+    if row:
+        try:
+            data = json.loads(row["payload"])
+            if isinstance(data, dict):
+                data["report_id"] = rid
+            return data
+        except ValueError:
+            pass
+
+    # Fallback to Supabase if not found locally
+    sb = _get_supabase_client()
+    if sb:
+        try:
+            res = sb.table("reports").select("*").eq("id", rid).execute()
+            if res.data and len(res.data) > 0:
+                item = res.data[0]
+                payload = item.get("payload")
+                if isinstance(payload, str):
+                    payload = json.loads(payload)
+                if isinstance(payload, dict):
+                    payload["report_id"] = str(item.get("id") or rid)
+                    return payload
+        except Exception as e:
+            log.warning("Supabase get failed: %s", e)
+
+    return None
 
 
 def list_reports() -> list[dict]:
@@ -135,15 +195,40 @@ def list_reports() -> list[dict]:
             "SELECT id, created_at, mode, is_demo, risk_score, risk_level,"
             " confidence_score, confidence_level, headline FROM reports"
             " ORDER BY seq DESC LIMIT ?", (LIST_LIMIT,)).fetchall()
-    return [{"id": r["id"], "created_at": r["created_at"], "mode": r["mode"],
-             "is_demo": bool(r["is_demo"]), "risk_score": r["risk_score"], "risk_level": r["risk_level"],
-             "confidence_score": r["confidence_score"], "confidence_level": r["confidence_level"],
-             "headline": r["headline"]} for r in rows]
+    local_list = [{"id": r["id"], "created_at": r["created_at"], "mode": r["mode"],
+                   "is_demo": bool(r["is_demo"]), "risk_score": r["risk_score"], "risk_level": r["risk_level"],
+                   "confidence_score": r["confidence_score"], "confidence_level": r["confidence_level"],
+                   "headline": r["headline"]} for r in rows]
+
+    if local_list:
+        return local_list
+
+    # If local is empty, try Supabase
+    sb = _get_supabase_client()
+    if sb:
+        try:
+            res = sb.table("reports").select("id, created_at, mode, is_demo, risk_score, risk_level, confidence_score, confidence_level, headline").order("created_at", desc=True).limit(LIST_LIMIT).execute()
+            if res.data:
+                return res.data
+        except Exception as e:
+            log.warning("Supabase list failed: %s", e)
+
+    return []
 
 
 def delete(rid: str) -> bool:
     if not ID_RE.fullmatch(rid or ""):
         return False
+    deleted = False
     with _db() as conn:
         cur = conn.execute("DELETE FROM reports WHERE id = ?", (rid,))
-        return cur.rowcount > 0
+        deleted = cur.rowcount > 0
+
+    sb = _get_supabase_client()
+    if sb:
+        try:
+            sb.table("reports").delete().eq("id", rid).execute()
+        except Exception:
+            pass
+
+    return deleted

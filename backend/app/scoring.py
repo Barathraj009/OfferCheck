@@ -6,12 +6,13 @@ from .sources.common import now_iso
 
 # check id -> (label, confidence weight). Weights sum to 100.
 CHECKS = {
-    "market": ("Market data", 25),
+    "entity": ("Web & Entity verification", 20),
+    "market": ("Market data", 20),
     "explorer": ("Contract verification", 10),
     "security": ("Contract security scan", 20),
-    "liquidity": ("Liquidity & trading", 15),
-    "domain": ("Domain registration", 15),
-    "webSafety": ("Website safety", 15),
+    "liquidity": ("Liquidity & trading", 10),
+    "domain": ("Domain registration", 10),
+    "webSafety": ("Website safety", 10),
 }
 LEVELS = [(80, "very_high", "Very High Risk"), (50, "high", "High Risk"), (25, "moderate", "Moderate Risk"), (0, "low", "Low Risk")]
 CLAIM_SRC = "Offer text (your input)"
@@ -34,6 +35,9 @@ META = {
     "SECRETS_REQUESTED": ("Request for secret credentials", "Seed phrases, private keys, passwords and OTPs give full access to your funds.", "Nobody legitimate will ever need these. Sharing them lets someone empty your wallet or account instantly."),
     "NEW_DOMAIN": ("Website age", "Scam sites are often created days before a campaign.", "A very recently registered domain has no track record. Many fraud sites are only a few days or weeks old."),
     "MALICIOUS_SITE": ("Known-dangerous website listing", "Browser-safety lists flag sites already reported for phishing or malware.", "A match means a security provider has already classified the site as dangerous."),
+    "OFFICIAL_ENTITY_VERIFIED": ("Verified official organization / domain", "The offer originates from a verified legitimate entity on their official domain.", "Verification confirmed this domain belongs to the official organization."),
+    "BRAND_IMPERSONATION": ("Brand impersonation warning", "The offer claims to represent a recognized company but uses an unverified or mismatched domain.", "Scammers frequently impersonate trusted brands using lookalike or third-party websites."),
+    "WEB_SCAM_ALERT": ("Web fraud warning", "Web intelligence indicates this offer or domain has been flagged as suspicious.", "Public reports and search data associate this entity or offer with fraudulent activity."),
 }
 
 
@@ -76,7 +80,11 @@ def r_price(cl, ck):
     if not mkt:
         return None
     diff = (mkt - unit) / mkt * 100
+    if cl.get("quantity_assumed") and diff > 80:
+        return None
     pts = 40 if diff > 60 else 35 if diff > 40 else 28 if diff > 20 else 10 if diff > 10 else 0
+    if pts == 0:
+        return None
     sym = cl.get("asset_symbol") or "unit"
     note = " (quantity not stated, so 1 unit was assumed)" if cl.get("quantity_assumed") else ""
     obs = f"Offer: {money(cur, unit)} per {sym}{note}. Observed market price: {money(cur, mkt)}. Difference: {abs(diff):.1f}% {'below' if diff >= 0 else 'above'} market."
@@ -85,8 +93,17 @@ def r_price(cl, ck):
 
 def r_not_found(cl, ck):
     m = ck.get("market")
-    if m and m["status"] == "not_found":
-        return _f("ASSET_NOT_FOUND", 12, "The asset could not be independently verified through the available market-data source.", m, status="not_found")
+    if not m:
+        return None
+    # 3-state model:
+    # 1. LISTED (status == "verified"): Handled by r_price, 0 pts here.
+    # 2. LOOKUP-FAILED (status in ("unavailable", "error")): 0 pts.
+    # 3. NOT-LISTED (status == "not_found"): Successful empty lookup -> 12 pts with evidence.
+    if m.get("status") == "not_found":
+        target = cl.get("asset_name") or cl.get("asset_symbol") or cl.get("contract_address") or "asset"
+        obs = f"The asset '{target}' could not be independently verified through market-data sources ({m.get('source', 'CoinGecko')})."
+        return _f("ASSET_NOT_FOUND", 12, obs, m, status="not_found", evidence={"status": "NOT-LISTED", "queried_asset": str(target), "source": m.get("source")})
+    return None
 
 
 def r_unverified(cl, ck):
@@ -167,17 +184,19 @@ def r_conc(cl, ck):
 
 
 def r_guar(cl, ck):
-    if cl.get("guaranteed_language"):
-        return _f("GUARANTEED_RETURNS", 25, "The offer uses guaranteed / risk-free language: \"" + (cl["phrases"].get("guaranteed_language") or "") + "\"", status="claim")
+    phrase = ((cl.get("phrases") or {}).get("guaranteed_language") or "").strip()
+    if cl.get("guaranteed_language") and phrase:
+        return _f("GUARANTEED_RETURNS", 25, f'The offer uses guaranteed / risk-free language: "{phrase}"', status="claim", evidence={"matched_text": phrase, "claim_type": "guaranteed_language"})
+    return None
 
 
 def r_returns(cl, ck):
     pct, mult, days = cl.get("promised_return_pct"), cl.get("promised_multiplier"), cl.get("return_period_days")
     if not pct and mult:
         pct = (mult - 1) * 100
-    if not pct:
+    if not pct or pct <= 0:
         return None
-    if days:
+    if days and days > 0:
         ann = pct * 365 / days
         pts = 25 if ann >= 1000 else 20 if ann >= 100 else 0
         obs = f"Promised return: {pct:,.0f}% in {days:g} day(s) - roughly {ann:,.0f}% per year."
@@ -186,21 +205,29 @@ def r_returns(cl, ck):
         obs = f"Promised return: {pct:,.0f}% (no time period stated)."
     if pts:
         return _f("UNREALISTIC_RETURNS", pts, obs, status="claim", evidence={"pct": pct, "days": days, "annualised_pct": ann})
+    return None
 
 
 def r_ref(cl, ck):
-    if cl.get("referral"):
-        return _f("REFERRAL_MODEL", 12, "The offer rewards you for referring others: \"" + (cl["phrases"].get("referral") or "") + "\"", status="claim")
+    phrase = ((cl.get("phrases") or {}).get("referral") or "").strip()
+    if cl.get("referral") and phrase:
+        return _f("REFERRAL_MODEL", 12, f'The offer rewards you for referring others: "{phrase}"', status="claim", evidence={"matched_text": phrase, "claim_type": "referral"})
+    return None
 
 
 def r_urg(cl, ck):
-    if cl.get("urgency") or cl.get("limited_time"):
-        return _f("URGENCY", 10, "Pressure / deadline language detected: \"" + (cl["phrases"].get("urgency") or cl["phrases"].get("limited_time") or "") + "\"", status="claim")
+    phrases = cl.get("phrases") or {}
+    phrase = (phrases.get("urgency") or phrases.get("limited_time") or "").strip()
+    if (cl.get("urgency") or cl.get("limited_time")) and phrase:
+        return _f("URGENCY", 10, f'Pressure / deadline language detected: "{phrase}"', status="claim", evidence={"matched_text": phrase, "claim_type": "urgency"})
+    return None
 
 
 def r_secret(cl, ck):
-    if cl.get("requests_secrets"):
-        return _f("SECRETS_REQUESTED", 40, "The offer mentions seed phrases, private keys, passwords or OTPs: \"" + (cl["phrases"].get("requests_secrets") or "") + "\"", status="claim")
+    phrase = ((cl.get("phrases") or {}).get("requests_secrets") or "").strip()
+    if cl.get("requests_secrets") and phrase:
+        return _f("SECRETS_REQUESTED", 40, f'The offer mentions seed phrases, private keys, passwords or OTPs: "{phrase}"', status="claim", evidence={"matched_text": phrase, "claim_type": "requests_secrets"})
+    return None
 
 
 def r_domain(cl, ck):
@@ -222,7 +249,25 @@ def r_web(cl, ck):
     return _f("MALICIOUS_SITE", 0, "No match in the website-safety lists. (This does not prove the site is safe - new sites may not be listed yet.)", w)
 
 
-RULES = [r_price, r_not_found, r_unverified, r_honeypot, r_mint, r_owner, r_tax, r_liq, r_conc, r_guar, r_returns, r_ref, r_urg, r_secret, r_domain, r_web]
+def r_entity(cl, ck):
+    e = ck.get("entity")
+    if not _ok(e):
+        return None
+    d = e.get("data") or {}
+    if d.get("impersonation_detected"):
+        ent = d.get("entity") or "a recognized organization"
+        doms = ", ".join(d.get("official_domains") or [])
+        obs = f"The offer claims affiliation with {ent}, but does not use their official domain ({doms})."
+        return _f("BRAND_IMPERSONATION", 45, obs, e, evidence={"entity": ent, "official_domains": d.get("official_domains")})
+    if d.get("entity_verified") and d.get("official_domain_match"):
+        ent = d.get("entity") or "Organization"
+        cat = d.get("category") or "Verified Entity"
+        obs = f"Verified official domain for {ent} ({cat})."
+        return _f("OFFICIAL_ENTITY_VERIFIED", 0, obs, e, evidence={"entity": ent, "category": cat, "official": True})
+    return None
+
+
+RULES = [r_price, r_not_found, r_unverified, r_honeypot, r_mint, r_owner, r_tax, r_liq, r_conc, r_guar, r_returns, r_ref, r_urg, r_secret, r_domain, r_web, r_entity]
 
 
 def coverage(ck: dict) -> dict:
@@ -282,15 +327,61 @@ def confidence(cov: dict, conflicts: list[str]) -> dict:
 def assess(claims: dict, checks: dict) -> dict:
     findings = [f for f in (r(claims, checks) for r in RULES) if f]
     raw = sum(f["points"] for f in findings)
-    score = min(100, raw)
+    score = min(100, max(0, raw))
     cov = coverage(checks)
     conflicts = detect_conflicts(claims, checks)
     conf = confidence(cov, conflicts)
-    insufficient = cov["available"] == 0 and raw == 0
-    key, label = next((k, l) for t, k, l in LEVELS if score >= t)
-    if insufficient:
-        key, label = "insufficient", "Not enough evidence"
+
+    ent_check = checks.get("entity")
+    ent_data = (ent_check.get("data") or {}) if _ok(ent_check) else {}
+    is_verified_entity = bool(ent_data.get("entity_verified") and ent_data.get("official_domain_match"))
+    is_impersonation = bool(ent_data.get("impersonation_detected"))
+    has_critical_exploit = any(f["rule_id"] in ("HONEYPOT", "SECRETS_REQUESTED", "MALICIOUS_SITE", "BRAND_IMPERSONATION") and f["points"] > 0 for f in findings)
+
+    # 3 distinct outcomes: verified-legit / suspicious / could-not-verify
+    if is_verified_entity and not has_critical_exploit:
+        outcome = "verified-legit"
+        outcome_label = "Verified Legitimate"
+        score = min(score, 15)  # Verified official company domain
+        key, label = "low", "Low Risk"
+        insufficient = False
+    elif is_impersonation or has_critical_exploit or score >= 40:
+        outcome = "suspicious"
+        outcome_label = "Suspicious / High Risk"
+        key, label = next((k, l) for t, k, l in LEVELS if score >= t)
+        insufficient = False
+    elif cov["available"] == 0 or (score < 30 and not is_verified_entity and cov["available"] <= 1):
+        outcome = "could-not-verify"
+        outcome_label = "Could Not Verify (Inconclusive)"
+        score = min(score, 20)  # Capped: never assume max risk on weak/missing evidence
+        key, label = "insufficient", "Could Not Verify"
+        insufficient = True
+    else:
+        if score <= 25:
+            outcome = "verified-legit" if cov["available"] >= 2 else "could-not-verify"
+            outcome_label = "Low Risk / Likely Safe" if outcome == "verified-legit" else "Could Not Verify (Inconclusive)"
+            key, label = "low", "Low Risk"
+            insufficient = False
+        else:
+            outcome = "suspicious"
+            outcome_label = "Suspicious"
+            key, label = next((k, l) for t, k, l in LEVELS if score >= t)
+            insufficient = False
+
     findings.sort(key=lambda f: -f["points"])
-    cov = {k: v for k, v in cov.items() if not k.startswith("_")}
-    return {"findings": findings, "risk": {"score": score, "raw_points": raw, "level": label, "level_key": key, "insufficient_evidence": insufficient},
-            "confidence": conf, "coverage": cov, "conflicts": conflicts}
+    cov_clean = {k: v for k, v in cov.items() if not k.startswith("_")}
+    return {
+        "findings": findings,
+        "risk": {
+            "score": score,
+            "raw_points": raw,
+            "level": label,
+            "level_key": key,
+            "insufficient_evidence": insufficient,
+            "outcome": outcome,
+            "outcome_label": outcome_label,
+        },
+        "confidence": conf,
+        "coverage": cov_clean,
+        "conflicts": conflicts
+    }

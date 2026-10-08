@@ -2,20 +2,19 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
-from pathlib import Path
+import tempfile
 from typing import Any
 
-import numpy as np
-from fastapi import File, HTTPException, Request, UploadFile
-from fastapi import APIRouter
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 
-api_whisper_router = APIRouter(prefix="/whisper", tags=["whisper"])
+from .config import get_settings
 
-log = logging.getLogger("scamcheck")
+api_whisper_router = APIRouter(tags=["whisper"])
+
+log = logging.getLogger("scamcheck.whisper")
 
 # Module-level Whisper model (loaded once at startup)
 _whisper_model: Any = None
@@ -40,78 +39,106 @@ def _get_whisper_model() -> Any:
     return _whisper_model
 
 
-def _transcribe_audio_file(file_path: str, language: str | None = None) -> str:
-    """Transcribe a WAV audio file using faster-whisper.
+def warm_whisper_model() -> Any:
+    """Preload / warm up the faster-whisper model at startup."""
+    try:
+        return _get_whisper_model()
+    except Exception as e:
+        log.warning("faster-whisper warmup failed: %s", e)
+        return None
 
-    Returns the full combined text from all segments.
+
+def _transcribe_audio_file(file_path: str, language: str | None = None) -> tuple[str, str | None]:
+    """Transcribe an audio file using faster-whisper.
+    Returns (combined_text, detected_language).
     """
     model = _get_whisper_model()
     if model is None:
-        raise HTTPException(status_code=503, detail="faster-whisper is not available on this server.")
+        raise HTTPException(
+            status_code=503,
+            detail="faster-whisper is not available on this server. Please check faster-whisper installation or type the offer text directly."
+        )
 
     try:
-        segments, info = model.transcribe(file_path, language=language)
-        # Combine all segments into full text
+        segments, info = model.transcribe(file_path, language=language if language else None)
         text_parts = [segment.text.strip() for segment in segments if segment.text.strip()]
         full_text = " ".join(text_parts).strip()
+        detected_lang = info.language if info else None
         log.info(
-            "faster-whisper transcription: %d chars, language=%s, %.1f%% confidence",
+            "faster-whisper transcription: %d chars, language=%s",
             len(full_text),
-            info.language,
-            info.language_probability * 100 if info.language_probability else 0.0,
+            detected_lang,
         )
-        return full_text
+        return full_text, detected_lang
     except Exception as e:
         log.exception("faster-whisper transcription failed")
         raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)[:200]}")
 
 
-@api_whisper_router.post("/api/whisper-transcribe")
+@api_whisper_router.get("/whisper/health")
+async def whisper_health():
+    model = _get_whisper_model()
+    return {"available": model is not None, "engine": "faster-whisper", "model": os.getenv("WHISPER_MODEL_SIZE", "tiny")}
+
+
+@api_whisper_router.post("/whisper-transcribe")
 async def whisper_transcribe(
     file: UploadFile = File(...),
     language: str | None = None,
 ):
-    """Transcribe uploaded WAV audio using faster-whisper.
+    """Transcribe uploaded audio file using faster-whisper."""
+    s = get_settings()
+    max_bytes = s.max_upload_bytes
 
-    Accepts WAV audio files. Returns the transcribed text.
-    """
-    # Validate file type
-    if file.content_type not in ("audio/wav", "audio/x-wav", "audio/pcm", "audio/wave"):
-        raise HTTPException(status_code=415, detail="Please upload a WAV audio file.")
+    # Accept common audio formats
+    allowed_types = (
+        "audio/wav", "audio/x-wav", "audio/pcm", "audio/wave",
+        "audio/webm", "audio/ogg", "audio/mp4", "audio/mpeg",
+        "audio/mp3", "audio/aac", "audio/flac", "application/octet-stream"
+    )
+    if file.content_type and file.content_type not in allowed_types:
+        ext = (file.filename or "").lower().split(".")[-1]
+        if ext not in ("wav", "webm", "ogg", "mp3", "m4a", "aac", "flac", "mp4"):
+            raise HTTPException(
+                status_code=415,
+                detail="Please upload a supported audio file (WAV, WebM, MP3, OGG, M4A)."
+            )
 
-    # Read and save the uploaded file temporarily
-    MAX_AUDIO_BYTES = S.max_upload_bytes  # from config, default 5MB
-    data = await file.read()
-    if len(data) > MAX_AUDIO_BYTES:
-        raise HTTPException(status_code=413, detail=f"Audio file too large (max {MAX_AUDIO_BYTES // 1_048_576}MB).")
+    data = await file.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Audio file is larger than {max_bytes // 1_048_576} MB."
+        )
+    if not data:
+        raise HTTPException(status_code=422, detail="Empty audio file.")
 
-    # Save temporarily for whisper
+    ext = ".wav"
+    if file.filename and "." in file.filename:
+        ext = "." + file.filename.rsplit(".", 1)[-1].lower()
+    elif file.content_type == "audio/webm":
+        ext = ".webm"
+    elif file.content_type in ("audio/mpeg", "audio/mp3"):
+        ext = ".mp3"
+    elif file.content_type == "audio/ogg":
+        ext = ".ogg"
+
+    tmp_file = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
     try:
-        tmp_path = Path("/tmp") / f"whisper_{os.urandom(8).hex()}.wav"
-        with open(tmp_path, "wb") as f:
-            f.write(data)
+        tmp_file.write(data)
+        tmp_file.close()
 
-        # Transcribe
-        text = _transcribe_audio_file(str(tmp_path), language=language)
+        text, detected_lang = _transcribe_audio_file(tmp_file.name, language=language)
 
-        # Clean up temp file
+        return {
+            "text": text,
+            "empty": not bool(text),
+            "language": detected_lang,
+            "success": True,
+        }
+    finally:
         try:
-            os.unlink(tmp_path)
+            if os.path.exists(tmp_file.name):
+                os.unlink(tmp_file.name)
         except OSError:
             pass
-
-        if not text or not text.strip():
-            raise HTTPException(status_code=422, detail="No speech detected in the audio file.")
-
-        return {"text": text.strip()}
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        log.exception("whisper transcribe endpoint error")
-        # Clean up on error
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise HTTPException(status_code=500, detail=f"Transcription error: {str(e)[:200]}")
