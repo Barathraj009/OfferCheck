@@ -1,125 +1,246 @@
-# OfferCheck - AI-Powered Crypto Scam Verification and Risk Assessment Platform
+# OfferCheck: AI-Powered Multi-Modal Crypto Scam Verification & Risk Intelligence Platform
 
-Helps ordinary people **verify a cryptocurrency offer before sending money**. The user submits an offer (text, screenshot, website, token name, contract address, or voice). The system extracts the claims, checks them against market, blockchain, security, liquidity and website sources, scores risk with **deterministic rules**, calculates **confidence separately**, and explains the result in plain language.
+[![Repository](https://img.shields.io/badge/GitHub-Barathraj009%2FOfferCheck-blue?logo=github)](https://github.com/Barathraj009/OfferCheck)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python: 3.11+](https://img.shields.io/badge/Python-3.11%2B-brightgreen?logo=python)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688?logo=fastapi)](https://fastapi.tiangolo.com/)
+[![React: 18](https://img.shields.io/badge/React-18.3-61DAFB?logo=react)](https://react.dev/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.5-3178C6?logo=typescript)](https://www.typescriptlang.org/)
+[![Vite](https://img.shields.io/badge/Vite-5.4-646CFF?logo=vite)](https://vitejs.dev/)
+[![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-3.4-38B2AC?logo=tailwind-css)](https://tailwindcss.com/)
 
-It is a risk assessment and verification aid - **not** financial, legal or investment advice, and it never accuses anyone of a crime.
+> **OfferCheck** is a full-stack, multi-modal risk assessment platform designed to help everyday crypto users **verify any investment, token, airdrop, or peer-to-peer cryptocurrency offer before sending money or connecting wallets**.
 
-**Pipeline:** `Input -> claim extraction -> verification (6 checks) -> rule-based scoring -> confidence -> explainable report`
-The LLM (optional, local-first) only extracts claims and rewrites verified findings. It never sets the score.
+---
 
-**Fully zero-cost:** every verification check works with **no API keys** (Sourcify, public RPCs, GoPlus, DexScreener, RDAP, OpenPhish, CoinGecko, Binance, Frankfurter + a free local Ollama model for the AI parts). See `ZERO_COST_SETUP.md`; run `python doctor.py` to check your machine.
+## 📌 Direct Links & Repository Structure
 
-## What is live vs demo
+* **Main Repository:** [https://github.com/Barathraj009/OfferCheck](https://github.com/Barathraj009/OfferCheck)
+* **Backend Source:** [`backend/`](https://github.com/Barathraj009/OfferCheck/tree/main/backend)
+  * [Scoring & Deterministic Rules](https://github.com/Barathraj009/OfferCheck/blob/main/backend/app/scoring.py)
+  * [Multi-Tier LLM Chain](https://github.com/Barathraj009/OfferCheck/blob/main/backend/app/llm.py)
+  * [Regex & Heuristic Claim Extraction](https://github.com/Barathraj009/OfferCheck/blob/main/backend/app/extraction.py)
+  * [Faster-Whisper Audio Transcription](https://github.com/Barathraj009/OfferCheck/blob/main/backend/app/whisper_routes.py)
+  * [PaddleOCR & Tesseract Engine](https://github.com/Barathraj009/OfferCheck/blob/main/backend/app/ocr.py)
+  * [Verification Sources & Adapters](https://github.com/Barathraj009/OfferCheck/tree/main/backend/app/sources)
+  * [SSRF & Security Defense](https://github.com/Barathraj009/OfferCheck/blob/main/backend/app/sources/common.py)
+  * [SQLite Report Store](https://github.com/Barathraj009/OfferCheck/blob/main/backend/app/store.py)
+* **Frontend Source:** [`frontend/`](https://github.com/Barathraj009/OfferCheck/tree/main/frontend)
+  * [Offer Verification Page](https://github.com/Barathraj009/OfferCheck/blob/main/frontend/src/pages/Check.tsx)
+  * [Dynamic Risk & Explainability Report](https://github.com/Barathraj009/OfferCheck/blob/main/frontend/src/pages/Report.tsx)
 
-| Feature | Status |
-|---|---|
-| Text offer -> claim extraction (rule-based, English) | Live, offline, no key |
-| Claim extraction for messy / regional-language text | Live **with a free local Ollama model** (or optional `ANTHROPIC_API_KEY`); else rule-based only |
-| Rule-based risk score, confidence, report, checklist | Live, offline |
-| Contract verification (Sourcify v2 → public RPC bytecode) | Live **keyless**; `ETHERSCAN_API_KEY` adds one more layer |
-| GoPlus contract security, DexScreener liquidity, RDAP domain age | Live (keyless) |
-| Market price (CoinGecko → DexScreener → Binance; FX via Frankfurter) | Live (keyless) |
-| Website safety (OpenPhish phishing feed) | Live **keyless**; `GOOGLE_SAFE_BROWSING_API_KEY` adds Google's lists |
-| AI explanation of findings | Live with local Ollama / optional Anthropic key; otherwise a fixed template |
-| Screenshot OCR | Live, needs Tesseract installed on the server (preprocessed: grayscale, autocontrast, upscale) |
-| Voice input | Browser Web Speech API (Chrome/Edge); 10 Indian languages selectable |
-| **Demo mode** (5 sample scenarios) | **Simulated data, always labelled "DEMO DATA, NOT LIVE VERIFICATION"** |
+---
 
-Demo mode with *your own* input runs claim extraction and text rules, but every external check shows "Unavailable" because demo mode has no live data. Mock data is never presented as real.
+## 🌟 Key Features
 
-## Tech stack
-Python 3.11+, FastAPI, httpx, Pillow + pytesseract (OCR) | React 18, TypeScript, Vite, Tailwind CSS 3. Optional: Ollama (local LLM). Licenses: `DEPENDENCY_LICENSES.md`.
+1. **Multi-Modal Input Ingestion:**
+   - **Text & Links:** Analyzes descriptions, social media pitch copy, telegram pitches, and website URLs.
+   - **Visual OCR (Screenshots & PDFs):** Dual-pipeline OCR powered by **Tesseract** & **PaddleOCR** with grayscale conversion, adaptive contrast enhancement, and orientation detection.
+   - **Voice & Audio Notes:** Integrated with **faster-whisper** (`Systran/faster-whisper-tiny` with int8 quantization) and browser Web Speech API supporting 10+ regional languages (Hindi, Tamil, Telugu, etc.).
 
-## Setup
+2. **Multi-Tier Robust LLM Extraction & Summary Fallback:**
+   - Provider cascade: **Groq (`llama-3.3-70b-versatile`)** $\rightarrow$ **OpenRouter** $\rightarrow$ **Google Gemini (`gemini-flash-latest`, `gemini-3.8-flash`)** $\rightarrow$ **Local Offline Ollama (`llama3.2:1b`)** $\rightarrow$ **Deterministic Template**.
+   - Strict prompt-injection sanitization and provenance tagging (`price_verbatim`).
 
+3. **7-Dimensional Independent Verification Engine (Zero-Cost / Keyless):**
+   - **Market Price & FX Check:** Real-time pricing via **CoinGecko**, **DexScreener**, and **Binance** with currency conversion through European Central Bank (Frankfurter FX).
+   - **Smart Contract Verification:** Open-source code verification via **Sourcify v2** and public multi-chain RPC bytecodes (Ethereum, BSC, Polygon, Arbitrum, Base).
+   - **Contract Security Scan:** Threat detection via **GoPlus Security API** (honeypot check, mintable status, hidden owners, excessive sell tax, balance drain functions).
+   - **DEX Liquidity & Volume:** Liquidity pool depth and 24h volume tracking via **DexScreener**.
+   - **Domain Registration Age:** RDAP / WHOIS registry age lookup with DNS fallback.
+   - **Web Threat Intelligence:** Real-time URL phishing check against **OpenPhish** feeds and Google Safe Browsing.
+   - **Entity & Brand Impersonation:** Cross-references company identity against Wikipedia and authoritative domain registries.
+
+4. **Deterministic Rule Engine (No Hallucinations):**
+   - **LLMs never compute or touch risk scores.**
+   - All points originate from verified, deterministic rules in `scoring.py`.
+   - Every point is traceable to explicit findings with observed values, difference percentages, and provider evidence.
+   - Confidence score is mathematically computed strictly from verified check weights (sum of 20/20/10/20/10/10/10 = 100).
+
+5. **Enterprise-Grade Security Hardening:**
+   - **SSRF Protection:** Strict private IP blocklist (IPv4, IPv6, loopback, link-local, AWS metadata endpoints `169.254.169.254`), scheme enforcement (`https://` required), and DNS rebinding defense.
+   - **Decompression Bomb Guard:** Pillow `MAX_IMAGE_PIXELS` enforcement on image uploads.
+   - **Rate Limiting:** Sliding-window in-memory IP rate limiter with `429 Too Many Requests` and `Retry-After` headers.
+   - **Magic Byte Validation:** Binary signature inspection for PNG, JPEG, WebP, and PDF uploads.
+
+6. **Persistent SQLite Report Hub:**
+   - Save reports locally with privacy-first SQLite store.
+   - Shareable report URLs and one-click JSON export.
+
+---
+
+## 🏗️ System Architecture
+
+```mermaid
+flowchart TD
+    subgraph Inputs ["Multi-Modal Inputs"]
+        A1["Text / URL Input"]
+        A2["Screenshot / PDF (OCR)"]
+        A3["Audio / Voice (Whisper)"]
+    end
+
+    subgraph Ingestion ["Ingestion & Extraction"]
+        B1["Pillow & Media Magic Guard"]
+        B2["Tesseract / PaddleOCR"]
+        B3["Faster-Whisper Engine"]
+        B4["Regex Heuristics & LLM Parser"]
+        B5["Provenance Tagging (price_verbatim)"]
+    end
+
+    subgraph Verification ["7-Dimensional External Verification"]
+        C1["Market Check (CoinGecko / DexScreener / FX)"]
+        C2["Contract Check (Sourcify / Multi-Chain RPC)"]
+        C3["Security Scan (GoPlus Honeypot / Tax / Mint)"]
+        C4["Liquidity Scan (DexScreener Pool Depth)"]
+        C5["Domain Check (RDAP / DNS Registry)"]
+        C6["Web Safety (OpenPhish / Safe Browsing)"]
+        C7["Entity Check (Wikipedia / Domain Match)"]
+    end
+
+    subgraph Scoring ["Deterministic Scoring Engine (No LLM)"]
+        D1["Rule Matrix & Point Assignment"]
+        D2["Traceable Findings & Evidence"]
+        D3["Honest Weight-Sum Confidence"]
+        D4["Multi-Tier LLM Plain Words Summary"]
+    end
+
+    subgraph Presentation ["UI & Storage"]
+        E1["React 18 + Tailwind Dashboard"]
+        E2["Interactive Risk Meter & Why Table"]
+        E3["SQLite Report Store & JSON Export"]
+    end
+
+    Inputs --> Ingestion
+    A1 --> B4
+    A2 --> B1 --> B2 --> B4
+    A3 --> B3 --> B4
+    B4 --> B5 --> Verification
+    Verification --> Scoring
+    Scoring --> Presentation
+```
+
+---
+
+## 🚀 Quickstart & Setup
+
+### Prerequisites
+- Python 3.11+
+- Node.js 18+ and npm
+- Tesseract OCR (Optional for local screenshot OCR: `winget install UB-Mannheim.TesseractOCR` or `apt install tesseract-ocr`)
+
+### One-Click Windows Launcher
+Double-click `start.bat` in the repository root or run:
+```cmd
+start.bat
+```
+
+### Manual Setup
+
+#### 1. Backend Service
 ```bash
-# Backend (terminal 1)
 cd backend
-python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
+python -m venv .venv
 
-# Frontend (terminal 2)
+# Activate virtual environment
+# Windows:
+.venv\Scripts\activate
+# Linux/macOS:
+source .venv/bin/activate
+
+pip install -r requirements.txt
+
+# Start backend server
+uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+#### 2. Frontend Application
+```bash
 cd frontend
 npm install
-npm run dev                                              # http://localhost:5173  (proxies /api to :8000)
+npm run dev
+```
+Open [http://localhost:5173](http://localhost:5173) in your browser.
 
-# Check this machine (READY / OPTIONAL / MISSING per capability)
-cd backend && python doctor.py            # add --probe to test the free sources over the network
+---
+
+## ⚙️ Environment Configuration (`backend/.env`)
+
+All keys are **optional**. The platform operates completely in **zero-cost mode** out of the box using public endpoints and local models:
+
+```ini
+# App mode (live or demo)
+APP_MODE=live
+
+# AI Provider Chain (auto | groq | openrouter | gemini | ollama | none)
+LLM_PROVIDER=auto
+
+# Cloud AI Keys (Optional)
+GROQ_API_KEY=your_groq_api_key_here
+GROQ_MODEL=llama-3.3-70b-versatile
+
+OPENROUTER_API_KEY=your_openrouter_api_key_here
+OPENROUTER_MODEL=meta-llama/llama-3.3-70b-instruct:free
+
+GEMINI_API_KEY=your_gemini_api_key_here
+GEMINI_MODEL=gemini-flash-latest
+
+# Local Offline AI (Optional)
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+OLLAMA_MODEL=llama3.2:1b
+
+# Security & Network Limits
+RATE_LIMIT_PER_10MIN=30
+HTTP_TIMEOUT_SECONDS=10.0
+ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 ```
 
-Optional single-server deploy: `cd frontend && npm run build`, then restart uvicorn - it serves `frontend/dist` at `/`.
+---
 
-Optional local AI (free): install [Ollama](https://ollama.com) and `ollama pull llama3.2:1b`. The app never downloads models itself.
+## 🧪 Comprehensive Test Suite
 
-OCR: install Tesseract (`sudo apt install tesseract-ocr`, `brew install tesseract`, or `winget install UB-Mannheim.TesseractOCR`). For other languages add packs, e.g. `tesseract-ocr-hin`, `-tam`, `-tel`.
+OfferCheck comes with an extensive automated test suite covering unit tests, provider fallbacks, prompt injection defenses, HTTP integration, OCR pipelines, and voice transcription:
 
-## Environment variables (`backend/.env`; see `.env.example` — everything is optional)
-| Variable | Purpose |
-|---|---|
-| `APP_MODE` | `demo` (default) or `live`; users can switch in the UI |
-| `LLM_PROVIDER` | `auto` (Groq → OpenRouter → Gemini → Ollama → deterministic), `groq`, `openrouter`, `gemini`, `ollama`, `none` |
-| `GROQ_API_KEY`, `GROQ_MODEL` | Primary cloud AI (default: `llama-3.3-70b-versatile`; get free key at https://console.groq.com/keys) |
-| `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` | Secondary cloud AI (default: `meta-llama/llama-3.3-70b-instruct:free`) |
-| `GEMINI_API_KEY`, `GEMINI_MODEL` | Tertiary cloud AI (default: `gemini-2.5-flash`) |
-| `OLLAMA_BASE_URL`, `OLLAMA_MODEL`, `OLLAMA_TIMEOUT_SECONDS` | Local offline AI (runs locally, zero-cost, no key needed; 20s timeout guard) |
-| `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` | Optional legacy hosted LLM fallback |
-| `COINGECKO_API_KEY` | Optional (free Demo key raises rate limits) |
-| `ETHERSCAN_API_KEY` | Optional extra contract-verification layer (Sourcify + RPC work without it) |
-| `GOOGLE_SAFE_BROWSING_API_KEY` | Optional website-safety layer (OpenPhish feed is used without it) |
-| `HTTP_TIMEOUT_SECONDS`, `CACHE_TTL_SECONDS`, `MAX_INPUT_CHARS`, `MAX_UPLOAD_BYTES`, `RATE_LIMIT_PER_10MIN`, `ALLOWED_ORIGINS` | Tuning and safety limits |
-
-Keys live only in the backend environment and never reach the browser.
-
-## Demo mode
-Run with no keys. On **Check an offer**, press a sample button:
-- **A - Cheap Bitcoin**: ~41% below the (simulated) market price, urgency, referral, 4-day-old site -> High Risk, Medium confidence, partial coverage.
-- **B - Suspicious token**: mintable, 35% sell tax, $3.2k liquidity, concentrated holders, new site, one source "rate limited" -> Very High Risk, High confidence.
-- **C - Ordinary offer**: ETH at market rate, no pressure -> Low Risk.
-- **D - Too little to verify**: a vague message with no asset/link/address -> "Not enough evidence", Low confidence (0 checks).
-- **E - Partial verification**: half the sources down -> score continues from real evidence (High/55) while confidence drops to Medium (3/6 checks).
-
-## Live mode
-Choose **Live verification** (or `APP_MODE=live`). Try your own text, a contract address + network, and a website. Example: token `Bitcoin`, text `Selling 1 BTC for $30,000, pay within 1 hour`.
-
-## Scoring (`backend/app/scoring.py`)
-Each rule has fixed points, e.g. price >20% below market 28-40, honeypot 40, unlimited mint 35, dangerous owner powers 20-30, sell tax >10/30/50% -> 20/30/35, liquidity <$5k 25 / <$25k 15 / no pairs 15, guaranteed language 25, unrealistic return 15-25, referral 12, urgency 10, domain <7/<30 days 20/15, website flagged by threat feed 45, secret-credential request 40, asset not found 12, contract source unverified 12, concentration 15-20. Points are summed and capped at 100. Levels: 0-24 Low, 25-49 Moderate, 50-79 High, 80-100 Very High; "Not enough evidence" if nothing could be checked and nothing was flagged.
-Confidence = share of applicable check weight that returned data, scaled by how many checks the input allowed, minus conflict penalties. High >= 65, Medium >= 35.
-The report's **"Why this score?"** table shows Rule → Evidence → Points → Why for every point.
-
-## Architecture
-```
-frontend (React)  --/api-->  FastAPI (app/main.py)
-                               analysis.py  orchestrator (steps 1-4)
-                                 extraction.py (+ llm.py optional)   claims
-                                 sources/base.py                     provider chain (fallback, stop_on, provenance)
-                                 sources/{market,chain,web}.py       verification adapters
-                                 sources/common.py                   cache, de-dup, circuit breaker, timeouts
-                                 demo.py                             labelled simulated fixtures (5 scenarios)
-                                 scoring.py                          deterministic rules, confidence, coverage
-                                 explain.py                          template summary, checklist, disclaimers
-```
-Details: `ARCHITECTURE.md`. Add a new source by composing providers with `run_chain`, registering it in `analysis.py`, and adding a rule in `scoring.py`.
-
-## Tests
 ```bash
-cd backend && python -m unittest discover -s tests -v    # 24 unit tests, stdlib only, no network
-cd backend && python tests/integration_http.py           # 38 HTTP checks: demo + live keyless APIs + error paths
-cd backend && OFFERCHECK_LIVE_LLM=1 python tests/integration_http.py   # + one real local-Ollama run (slow on CPU)
-cd frontend && node scripts/ui-smoke.mjs                 # 22 browser checks (needs APP_URL running)
+# 1. Run all Unit & Security Tests (96 tests)
+cd backend
+python -m unittest discover -s tests -v
+
+# 2. Run Whisper Voice & OCR Regression Tests
+python tests/test_whisper_and_ocr.py
+python tests/test_ocr_e2e.py
+
+# 3. Run Full HTTP Integration Pipeline (46 checks)
+python tests/integration_http.py
+
+# 4. Verify Live Acceptance Pair End-to-End
+python tests/verify_e2e_p2p.py
 ```
-Unit tests cover demo end-to-end (A-E), score traceability, provider-chain fallback/`stop_on`/circuit breaker, LLM output guards (injection), model-pick regression, unavailable != safe, "not found" is not a scam verdict, confidence vs risk, validation, unsupported network, extraction, prompt-injection text, and scenario-by-id requests. The integration script adds HTTP-level checks (invalid input, rate limit, OCR degradation, static frontend, error shape) plus live Sourcify/OpenPhish/CoinGecko/GoPlus/DexScreener verification. The UI script drives the real pages in a browser: sample -> analyse -> report, "Why this score?" table, live mode, mobile width, JS-error monitoring.
 
-Current status, what was fixed, and what remains: see `PROJECT_STATUS.md`. Provider evaluation notes: `FREE_PROVIDER_MATRIX.md`.
+---
 
-## Limitations
-- Heuristic extraction is English-centred; messy/regional-language text needs the (free) local Ollama model.
-- Contract networks: Ethereum, BNB Chain, Polygon, Arbitrum, Base. Solana/others are reported unsupported. EVM address checksum (EIP-55) is not verified.
-- Domain registrable-name detection is heuristic; some TLDs publish no RDAP data (then DNS fallback answers "resolves / does not resolve" without inventing an age).
-- Free public APIs are rate-limited; results are cached for 10 minutes and a failing host is circuit-broken for 60 s.
-- Market comparison assumes 1 unit when no quantity is stated (and says so); FX conversions use ECB reference rates and are labelled.
-- Reports are not stored (no database); the last report is kept in the browser tab's session only.
-- On a CPU-only machine a live analysis with the LLM takes ~1-2 minutes (frontend waits up to 180 s).
+## 📊 API Reference
 
-## Security notes
-Secrets only in server env; inputs sanitised and length-limited; addresses validated per network; URLs validated (http/https only, no IPs/localhost/credentials/odd ports) and **never fetched** - only their public hostname is looked up (SSRF-safe); uploads restricted to PNG/JPEG/WebP, size and pixel limits, verified with Pillow, preprocessed but never executed; offer text is delimited as untrusted data for the LLM and LLM output is schema-validated and cannot affect scoring (unit-tested against prompt injection); per-IP rate limit on live analysis and OCR; logs contain no offer text or secrets. The app never asks for seed phrases or private keys.
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/health` | `GET` | Health status, provider chain diagnostics, and active models |
+| `/api/analyze` | `POST` | Core analysis pipeline: claim extraction, 7 checks, scoring & summary |
+| `/api/ocr` | `POST` | Upload screenshot/PDF to extract clean text via Tesseract/PaddleOCR |
+| `/api/whisper-transcribe` | `POST` | Upload audio note (WAV, MP3, WebM) for local Whisper transcription |
+| `/api/whisper/health` | `GET` | Status of faster-whisper model runtime |
+| `/api/reports` | `POST` | Persist report to local SQLite store |
+| `/api/reports/{id}` | `GET` | Retrieve saved report by share ID |
+| `/api/reports` | `GET` | List saved report summaries with pagination |
+
+---
+
+## 🛡️ Responsible Disclosure & Legal Disclaimer
+
+* **Risk Assessment Aid:** OfferCheck provides automated heuristics, security scans, and blockchain intelligence for informational purposes only.
+* **Non-Defamatory Design:** The engine classifies risk levels and technical red flags; it never makes legal determinations or accuses entities of crimes.
+* **Privacy by Design:** Offer texts and uploaded media are never stored without explicit user action.
+
+---
+
+## 📄 License
+
+This project is licensed under the [MIT License](LICENSE).
