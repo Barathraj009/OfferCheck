@@ -77,7 +77,7 @@ function claimRows(c: Claims, checks?: Check[]): [string, string][] {
 
   const rows: [string, string | null][] = [
     ["Company / Brand", c.entity_name ?? null],
-    ["Asset", c.asset_name ? `${c.asset_name}${c.asset_symbol ? ` (${c.asset_symbol})` : ""}` : null],
+    ["Offered asset", c.asset_name ? `${c.asset_name}${c.asset_symbol ? ` (${c.asset_symbol})` : ""}` : null],
     ["Price asked", priceAsked],
     ["Market price the seller states", c.claimed_market_price != null ? `${c.quoted_currency ?? ""} ${c.claimed_market_price.toLocaleString("en-IN")}` : null],
     ["Promised return", c.promised_multiplier ? `${c.promised_multiplier}x` : c.promised_return_pct ? `${c.promised_return_pct}%` : null],

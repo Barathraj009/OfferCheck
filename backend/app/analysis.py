@@ -60,7 +60,7 @@ async def run_analysis(p: dict, s) -> dict:
             if v and not str(p.get(k) or "").strip():
                 p[k] = v
     text = sanitize_text(p.get("text"), s.max_input_chars)
-    token = sanitize_text(p.get("token_name"), 100)
+    token = sanitize_text(p.get("token_name") or p.get("token"), 100)
     url_raw, addr_raw = (p.get("url") or "").strip(), (p.get("contract_address") or "").strip()
     if not (text or token or url_raw or addr_raw):
         raise ValidationFailure("text", "Add something to check: describe the offer, or enter a website, token name or contract address.")
@@ -74,15 +74,28 @@ async def run_analysis(p: dict, s) -> dict:
         if out:
             llm_claims, llm_provider = out
             claims = merge_llm(claims, llm_claims, text)
+    site, notes = None, []
     if token:
-        claims.update(asset_name=token, asset_id=None, asset_symbol=None)
-        for aid, (name, sym, _) in KNOWN_ASSETS.items():
-            if token.lower() in (name.lower(), sym.lower(), aid):
-                claims.update(asset_id=aid, asset_name=name, asset_symbol=sym)
+        extracted_name = claims.get("asset_name")
+        extracted_sym = claims.get("asset_symbol")
+        extracted_token = extracted_sym or extracted_name
+        
+        if extracted_token and token.strip().lower() != extracted_token.strip().lower():
+            discrepancy = f"You asked to check '{token}', but the offer text describes {extracted_token} — verify which asset is actually being sold."
+            notes.append(discrepancy)
+            claims["discrepancy_note"] = discrepancy
+            claims["user_token"] = token
+            claims["user_provided"] = True
+        else:
+            claims.update(asset_name=token, asset_id=None, asset_symbol=None)
+            for aid, (name, sym, _) in KNOWN_ASSETS.items():
+                if token.lower() in (name.lower(), sym.lower(), aid):
+                    claims.update(asset_id=aid, asset_name=name, asset_symbol=sym)
+            claims["user_provided"] = True
+
     chain = (p.get("chain") or claims.get("chain") or "").lower()
     claims["chain"] = chain or None
     claims["contract_address"] = validate_address(addr_raw or claims.get("contract_address") or "", chain) or None
-    site, notes = None, []
     if url_raw:
         site = normalize_url(url_raw)  # explicit link: invalid -> clear error
     elif claims.get("website_url"):
@@ -128,6 +141,7 @@ async def run_analysis(p: dict, s) -> dict:
 
     # ---- STEP 3: deterministic scoring + confidence ----
     core = assess(claims, checks)
+    core["claims"] = claims
 
     # ---- STEP 4: explanation ----
     summary, method = template_summary(core), "template"

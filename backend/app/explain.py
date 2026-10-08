@@ -40,11 +40,22 @@ PHRASE = {
 
 def template_summary(core: dict) -> str:
     r, c = core["risk"], core["confidence"]
+    claims = core.get("claims") or {}
+    discrepancy = claims.get("discrepancy_note")
     risky = [f for f in core["findings"] if f["points"] > 0][:4]
     if r["insufficient_evidence"]:
-        return ("There was not enough verifiable information to assess this offer. No external checks could be completed and no warning signs were found in the text itself. "
-                "That is NOT a sign of safety. Add a token name, contract address or website, or try again later. This is a risk assessment, not proof of anything.")
+        parts = ["There was not enough verifiable information to assess this offer."]
+        if discrepancy:
+            parts.append(discrepancy)
+        if risky:
+            parts.append("Warning indicators found: " + "; ".join(PHRASE.get(f["rule_id"], f["title"].lower()) for f in risky) + ".")
+        else:
+            parts.append("No external checks could be completed and no warning signs were found in the text itself.")
+        parts.append("That is NOT a sign of safety. Add a token name, contract address or website, or try again later. This is a risk assessment, not proof of anything.")
+        return " ".join(parts)
     parts = [f"This offer scored {r['score']} out of 100 ({r['level']}), with {c['level'].lower()} confidence."]
+    if discrepancy:
+        parts.append(discrepancy)
     if risky:
         parts.append("The main indicators found were: " + "; ".join(PHRASE.get(f["rule_id"], f["title"].lower()) for f in risky) + ".")
     else:
@@ -60,7 +71,18 @@ def template_summary(core: dict) -> str:
 
 def compact_for_llm(core: dict) -> dict:
     """Only verified facts go to the LLM for explanation. No raw user text is included."""
-    return {"risk_score": core["risk"]["score"], "risk_level": core["risk"]["level"], "confidence": core["confidence"]["level"],
-            "confidence_reasons": core["confidence"]["reasons"],
-            "findings": [{"title": f["title"], "points": f["points"], "observed": f["observed"], "source": f["source"], "status": f["status"]} for f in core["findings"]],
-            "unavailable_checks": [u["label"] for u in core["coverage"]["unavailable"]], "conflicts": core["conflicts"]}
+    claims = core.get("claims") or {}
+    d = {
+        "risk_score": core["risk"]["score"],
+        "risk_level": core["risk"]["level"],
+        "confidence": core["confidence"]["level"],
+        "confidence_reasons": core["confidence"]["reasons"],
+        "findings": [{"title": f["title"], "points": f["points"], "observed": f["observed"], "source": f["source"], "status": f["status"]} for f in core["findings"]],
+        "unavailable_checks": [u["label"] for u in core["coverage"]["unavailable"]],
+        "conflicts": core["conflicts"],
+    }
+    if claims.get("asset_name") or claims.get("asset_symbol"):
+        d["offered_asset"] = claims.get("asset_name") or claims.get("asset_symbol")
+    if claims.get("discrepancy_note"):
+        d["discrepancy"] = claims["discrepancy_note"]
+    return d

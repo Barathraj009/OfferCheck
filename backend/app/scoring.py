@@ -353,7 +353,8 @@ def assess(claims: dict, checks: dict) -> dict:
     is_verified_entity = bool(ent_data.get("entity_verified") and ent_data.get("official_domain_match"))
     is_impersonation = bool(ent_data.get("impersonation_detected"))
     mkt_check = checks.get("market")
-    mkt_verified = bool(_ok(mkt_check) and mkt_check.get("status") == "verified")
+    mkt_data = (mkt_check.get("data") or {}) if _ok(mkt_check) else {}
+    mkt_verified = bool(_ok(mkt_check) and mkt_check.get("status") == "verified" and not mkt_data.get("possible_collision") and not claims.get("discrepancy_note"))
     exp_check = checks.get("explorer")
     exp_verified = bool(_ok(exp_check) and (exp_check.get("data") or {}).get("source_verified") is True)
     sec_check = checks.get("security")
@@ -382,7 +383,7 @@ def assess(claims: dict, checks: dict) -> dict:
         insufficient = True
     else:
         outcome = "verified-legit"
-        outcome_label = "Low Risk / Likely Safe"
+        outcome_label = "Low Risk"
         key, label = "low", "Low Risk"
         insufficient = False
 

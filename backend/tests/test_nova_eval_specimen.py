@@ -91,7 +91,7 @@ class TestNovaEvalSpecimen(unittest.TestCase):
 
     def test_4_llm_summary_unwrapping_and_quote_guard(self):
         # 1. Unwrap JSON output into prose
-        raw_json_output = '{"Risk Assessment": "The offer for NYLP tokens has limited market data and requires independent verification."}'
+        raw_json_output = '{"Risk Assessment": "The offer for NYLP tokens has limited market data and requires independent verification. Check official sources before investing."}'
         report_core = {
             "findings": [{"rule_id": "ASSET_NOT_FOUND", "title": "Listing on a market-data source", "observed": "Asset NYLP not listed"}],
             "claims": {"asset_name": "NYLP"}
@@ -102,10 +102,18 @@ class TestNovaEvalSpecimen(unittest.TestCase):
         self.assertIn("The offer for NYLP tokens", clean)
 
         # 2. Quoted phrase that was not in findings (e.g. hallucinated "risk-free")
-        raw_with_hallucination = 'The offer promises "risk-free" profits through NYLP yield pool.'
+        raw_with_hallucination = 'The offer promises "risk-free" profits through NYLP yield pool. Independent checks are recommended for safety.'
         clean_hallucination = _clean_summary_prose(raw_with_hallucination, report_core)
         self.assertIsNotNone(clean_hallucination)
         self.assertNotIn("risk-free", clean_hallucination)
+
+        # 3. Short summary (< 2 sentences or < 70 chars) falls back (returns None)
+        short_summary = "Only one sentence here."
+        self.assertIsNone(_clean_summary_prose(short_summary, report_core))
+
+        # 4. Summary missing any reference to findings/claims
+        irrelevant_summary = "Hello world today is sunny. The weather outside is quite pleasant indeed."
+        self.assertIsNone(_clean_summary_prose(irrelevant_summary, report_core))
 
     def test_5_verdict_gate_inconclusive(self):
         # 1. Nova specimen has ASSET_NOT_FOUND (12 pts) and 0 positive verifications -> "Could Not Verify"
@@ -158,6 +166,33 @@ class TestNovaEvalSpecimen(unittest.TestCase):
         snip = _snippet("The returns depend on pool performance.", "pool")
         self.assertFalse(snip.startswith("ool"))
         self.assertTrue(snip.startswith("The returns") or snip.startswith("depend") or snip.startswith("pool") or snip.startswith("on"))
+
+    def test_7_user_token_override_and_discrepancy(self):
+        import asyncio
+        from app.analysis import run_analysis
+        from app.config import get_settings
+
+        # User provides token="botchain" while text describes NYLP
+        s = get_settings()
+        payload = {"text": NOVA_SPECIMEN_TEXT, "token": "botchain"}
+        rep = asyncio.run(run_analysis(payload, s))
+
+        claims = rep["claims"]
+        # Discrepancy note must be present
+        self.assertIn("discrepancy_note", claims)
+        self.assertIn("botchain", claims["discrepancy_note"].lower())
+        self.assertIn("nylp", claims["discrepancy_note"].lower())
+        self.assertEqual(claims["user_token"], "botchain")
+        self.assertTrue(claims["user_provided"])
+
+        # Real offered asset in claims remains NYLP
+        self.assertEqual(claims["asset_name"], "NYLP")
+        self.assertEqual(claims["asset_symbol"], "NYLP")
+
+        # Outcome must not be "Likely Safe" or verified-legit
+        self.assertEqual(rep["risk"]["outcome"], "could-not-verify")
+        self.assertNotEqual(rep["risk"]["outcome_label"], "Likely Safe")
+        self.assertEqual(rep["risk"]["level"], "Could Not Verify")
 
 
 if __name__ == "__main__":

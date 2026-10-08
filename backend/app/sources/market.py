@@ -81,18 +81,26 @@ async def _coingecko(claims: dict, s) -> dict:
     if not (name or aid or sym):
         raise SourceError("No asset name, symbol or contract address to look up.", "error")
     cid = aid
+    found_name, found_sym = name, sym
     if not cid:
         query = name or sym
         sr = await _get(s, "/search", {"query": query})
-        q = (name or "").lower()
-        sym_q = (sym or "").lower()
-        match = next((c for c in (sr or {}).get("coins", []) if (q and c.get("name", "").lower() == q) or (sym_q and c.get("symbol", "").lower() == sym_q)), None)
+        coins = (sr or {}).get("coins", [])
+        q_name = (name or "").strip().lower()
+        q_sym = (sym or "").strip().lower()
+        match = next((c for c in coins if (q_name and c.get("name", "").strip().lower() == q_name) or (q_sym and c.get("symbol", "").strip().lower() == q_sym)), None)
         if not match:
-            return result("market", SRC, "not_found", "No exact match on CoinGecko.", data={"queried": query, "provider": "CoinGecko"})
+            closest = coins[0] if coins else None
+            if closest:
+                closest_str = f"{closest.get('name', '')} ({closest.get('symbol', '').upper()})"
+                return result("market", SRC, "not_found", f"No exact match for '{query}' — closest result: '{closest_str}' (possible name collision).", data={"queried": query, "closest_match": closest_str, "possible_collision": True, "provider": "CoinGecko"})
+            return result("market", SRC, "not_found", f"No match found on CoinGecko for '{query}'.", data={"queried": query, "provider": "CoinGecko"})
         cid = match["id"]
+        found_name = match.get("name") or name
+        found_sym = (match.get("symbol") or sym or "").upper()
     p = await _price_by_id(s, cid)
     if not p:
-        return result("market", SRC, "not_found", "No price data returned.", data={"queried": cid, "provider": "CoinGecko"})
+        return result("market", SRC, "not_found", f"No price data returned for '{found_name}'.", data={"queried": cid, "provider": "CoinGecko"})
     prices = {k: p.get(k) for k in VS.split(",")}
     usd_val = _f(prices.get("usd"))
     fx_used = False
@@ -105,10 +113,10 @@ async def _coingecko(claims: dict, s) -> dict:
                     fx_used = True
         except Exception:
             pass
-    coin = {"id": cid, "name": name, "symbol": sym, "prices": prices,
+    coin = {"id": cid, "name": found_name, "symbol": found_sym, "prices": prices,
             "market_cap_usd": p.get("usd_market_cap"), "volume_24h_usd": p.get("usd_24h_vol"),
             "provider": "CoinGecko", "fx_converted": fx_used}
-    summary = f"{coin['name'] or coin['id']} found. USD {coin['prices'].get('usd')}, INR {coin['prices'].get('inr')}."
+    summary = f"{coin['name']} ({coin['symbol']}) found on CoinGecko. USD {coin['prices'].get('usd')}, INR {coin['prices'].get('inr')}."
     if claims.get("claimed_price") is None:
         summary += " Offer price not detected — add it to run the price check."
     return result("market", SRC, "verified", summary, data=coin)

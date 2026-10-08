@@ -507,7 +507,7 @@ async def extract_claims_llm(text: str, s) -> tuple[dict, str] | None:
         return None
 
 
-def _clean_summary_prose(txt: str, report_core: dict) -> str | None:
+def _clean_summary_prose(txt: str, report_core: dict, language: str = "en") -> str | None:
     txt = txt.strip()
     if not txt:
         return None
@@ -528,7 +528,12 @@ def _clean_summary_prose(txt: str, report_core: dict) -> str | None:
     # 2. Strip markdown headers, asterisks, backticks
     clean = re.sub(r"[#*_`]", "", txt).strip()
     clean = re.sub(r"^\s*[{}]+\s*", "", clean)
-    if not clean or clean.startswith("{") or len(clean) < 20:
+    if not clean or clean.startswith("{") or len(clean) < 70:
+        return None
+
+    # Sentence count check (require at least 2 sentences)
+    sentences = re.findall(r'[^.!?\n]+[.!?]+', clean)
+    if len(sentences) < 2:
         return None
 
     # 3. Post-check hallucinated quotes: every quoted phrase must exist in findings or claims
@@ -546,6 +551,14 @@ def _clean_summary_prose(txt: str, report_core: dict) -> str | None:
         if re.search(r"\b(?:risk[- ]free|zero risk)\b", clean, re.I):
             clean = re.sub(r"\b(?:promises?|claims?|offers?)\s+(?:a\s+)?risk[- ]free(?:\s+return)?\b", "presents unverified claims", clean, flags=re.I)
             clean = re.sub(r"\brisk[- ]free\b", "unverified", clean, flags=re.I)
+
+    # 5. Relevance check: if findings exist, ensure summary contains risk/finding keywords
+    if report_core.get("findings") or report_core.get("discrepancy"):
+        keywords = {"risk", "score", "finding", "verified", "unverified", "evidence", "check", "market", "token", "asset", "contract", "offer", "indicator", "warning", "discrepancy", "caution", "safety"}
+        clean_words = set(re.findall(r'\b[a-zA-Z]{4,}\b', clean.lower()))
+        findings_words = set(re.findall(r'\b[a-zA-Z]{4,}\b', core_text.lower()))
+        if language in ("en", "English", "") and not (clean_words & keywords or clean_words & findings_words):
+            return None
 
     return clean[:1800]
 
@@ -568,5 +581,5 @@ async def summarize_llm(report_core: dict, language: str, s) -> tuple[str, str] 
     except SourceError as e:
         log.warning("llm summary failed: %s", e.kind)
         return None
-    clean = _clean_summary_prose(txt, report_core)
+    clean = _clean_summary_prose(txt, report_core, language)
     return (clean, provider) if clean else None
