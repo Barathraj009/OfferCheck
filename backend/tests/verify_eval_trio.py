@@ -1,0 +1,106 @@
+"""Verification script for the full evaluation trio:
+1. Nova specimen: unverified entity, asset NYLP, not-listed finding, no guaranteed finding, inconclusive verdict.
+2. Metabot specimen: no price finding (fabricated price silenced).
+3. P2P Bitcoin specimen: price-bait finding present (25 pts, Moderate Risk).
+"""
+import json
+import sys
+import urllib.request
+import urllib.error
+
+sys.stdout.reconfigure(encoding="utf-8")
+
+def analyze(text: str) -> dict:
+    url = "http://127.0.0.1:8000/api/analyze"
+    payload = {"text": text, "mode": "live"}
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"}
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+def main():
+    print("=" * 70)
+    print("EVALUATION TRIO VERIFICATION")
+    print("=" * 70)
+
+    # 1. NOVA SPECIMEN
+    print("\n[SPECIMEN 1: NOVA YIELD POOL]")
+    nova_text = (
+        "NOVA YIELD POOL — Community Round. "
+        "Expected yield: around 1.5–2% monthly, variable, depends on pool performance. "
+        "Not a guarantee. All contributions are convertible into the NYLP token at launch. "
+        "Contribution range: 50 to 2,000 USDT. "
+        "Coordination happens in the Telegram group."
+    )
+    r_nova = analyze(nova_text)
+    claims_nova = r_nova.get("claims", {})
+    risk_nova = r_nova.get("risk", {})
+    findings_nova = r_nova.get("findings", [])
+    checks_nova = r_nova.get("checks", [])
+    summary_nova = r_nova.get("summary", {})
+
+    print(f"Asset Extracted: {claims_nova.get('asset_name')} (symbol: {claims_nova.get('asset_symbol')})")
+    print(f"Quoted / Payment Currency: {claims_nova.get('quoted_currency')}")
+    print(f"Guaranteed Language Flag: {claims_nova.get('guaranteed_language')}")
+    print(f"Risk Score: {risk_nova.get('score')} | Level: {risk_nova.get('level')} | Key: {risk_nova.get('level_key')}")
+    print(f"Outcome: {risk_nova.get('outcome')} ('{risk_nova.get('outcome_label')}')")
+    print(f"Insufficient Evidence: {risk_nova.get('insufficient_evidence')}")
+    print(f"Findings ({len(findings_nova)}): {[f.get('rule_id') for f in findings_nova]}")
+    for f in findings_nova:
+        print(f"  -> {f.get('rule_id')}: {f.get('title')} (+{f.get('points')})")
+        print(f"     Observed: {f.get('observed')}")
+        print(f"     Evidence: {f.get('evidence')}")
+    print(f"Summary (Method: {summary_nova.get('method')}):\n{summary_nova.get('text')}")
+
+    # Assertions for Nova
+    assert claims_nova.get("asset_symbol") == "NYLP", f"Expected NYLP asset, got {claims_nova.get('asset_symbol')}"
+    assert claims_nova.get("guaranteed_language") is False, "Expected guaranteed_language False"
+    assert risk_nova.get("outcome") == "could-not-verify", f"Expected could-not-verify, got {risk_nova.get('outcome')}"
+    assert risk_nova.get("level") == "Could Not Verify", f"Expected 'Could Not Verify', got {risk_nova.get('level')}"
+    assert any(f.get("rule_id") == "ASSET_NOT_FOUND" for f in findings_nova), "Expected ASSET_NOT_FOUND finding"
+    assert not any(f.get("rule_id") == "GUARANTEED_RETURNS" for f in findings_nova), "GUARANTEED_RETURNS must not fire"
+    print(">>> SPECIMEN 1 PASSED!")
+
+    # 2. METABOT SPECIMEN
+    print("\n[SPECIMEN 2: METABOT PACKAGE TABLE]")
+    metabot_text = (
+        "Metabot AI Trading Packages:\n"
+        "Bronze package costs $1,000 with 10% monthly yield.\n"
+        "Silver package costs $5,000 with 20% monthly yield.\n"
+        "Gold package costs $10,000 with 30% monthly yield.\n"
+        "Invite your friends to earn 15% referral commission!"
+    )
+    r_metabot = analyze(metabot_text)
+    findings_meta = r_metabot.get("findings", [])
+    price_findings_meta = [f for f in findings_meta if "PRICE" in f.get("rule_id", "")]
+    print(f"Findings: {[f.get('rule_id') for f in findings_meta]}")
+    print(f"Price Findings Count: {len(price_findings_meta)}")
+    assert len(price_findings_meta) == 0, f"Metabot must have NO price findings, got {price_findings_meta}"
+    print(">>> SPECIMEN 2 PASSED!")
+
+    # 3. P2P BITCOIN BAIT PRICE SPECIMEN
+    print("\n[SPECIMEN 3: P2P BITCOIN BAIT PRICE]")
+    p2p_text = "My friend is selling her Bitcoin for ₹30,000."
+    r_p2p = analyze(p2p_text)
+    risk_p2p = r_p2p.get("risk", {})
+    findings_p2p = r_p2p.get("findings", [])
+    price_bait_finding = next((f for f in findings_p2p if f.get("rule_id") == "PRICE_BAIT_UNSTATED_QUANTITY"), None)
+    print(f"Risk Score: {risk_p2p.get('score')} | Level: {risk_p2p.get('level')}")
+    print(f"Price Bait Finding Present: {price_bait_finding is not None}")
+    if price_bait_finding:
+        print(f"  -> Title: {price_bait_finding.get('title')} (+{price_bait_finding.get('points')})")
+        print(f"     Observed: {price_bait_finding.get('observed')}")
+    assert price_bait_finding is not None, "PRICE_BAIT_UNSTATED_QUANTITY finding must fire"
+    assert risk_p2p.get("score") == 25, f"Expected score 25, got {risk_p2p.get('score')}"
+    assert risk_p2p.get("level") == "Moderate Risk", f"Expected Moderate Risk, got {risk_p2p.get('level')}"
+    print(">>> SPECIMEN 3 PASSED!")
+
+    print("\n" + "=" * 70)
+    print("ALL EVALUATION TRIO SPECIMENS VERIFIED SUCCESSFULLY!")
+    print("=" * 70)
+
+if __name__ == "__main__":
+    main()

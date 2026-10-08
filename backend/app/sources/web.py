@@ -82,7 +82,10 @@ async def _openphish(site: dict, s) -> dict:
     """Keyless fallback: the OpenPhish community feed of currently active phishing URLs."""
 
     async def feed():
-        return await request_text("https://openphish.com/feed.txt", timeout=s.http_timeout)
+        try:
+            return await request_text("https://openphish.com/feed.txt", timeout=s.http_timeout)
+        except Exception:
+            return await request_text("https://raw.githubusercontent.com/openphish/public_feed/refs/heads/main/feed.txt", timeout=s.http_timeout)
 
     text = await cached("openphish:feed", 3600, feed)
     hosts, domains = set(), set()

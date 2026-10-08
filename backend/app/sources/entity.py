@@ -224,6 +224,16 @@ async def _tavily_lookup(query: str, s) -> dict | None:
     return None
 
 
+STOP_TOKENS = {"the", "a", "an", "of", "and", "or", "in", "on", "at", "to", "for", "with", "by", "from", "inc", "ltd", "corp", "llc", "group", "co"}
+GENERIC_TOKENS = {"nova", "pool", "yield", "token", "coin", "crypto", "defi", "swap", "finance", "protocol", "dao", "network", "community", "project", "alpha", "beta", "fund", "global", "capital", "ventures", "matrix", "apex", "safe", "moon", "earn", "reward", "chain", "official", "sale", "presale", "airdrop"}
+CORP_KEYWORDS = {"company", "corporation", "enterprise", "foundation", "organization", "firm", "financial", "crypto", "exchange", "bank", "fintech", "brokerage", "technology", "platform", "conglomerate", "business", "subsidiary", "operator", "protocol"}
+
+
+def _tokenize(s: str) -> set[str]:
+    words = re.findall(r"\b[a-zA-Z0-9]{2,}\b", s.lower())
+    return {w for w in words if w not in STOP_TOKENS}
+
+
 async def check_entity_and_web(claims: dict, site: dict | None, s) -> dict:
     """Verify entity authenticity, official domain match, and real-time web legitimacy."""
     candidate = _extract_brand_candidate(claims, site)
@@ -277,6 +287,9 @@ async def check_entity_and_web(claims: dict, site: dict | None, s) -> dict:
 
     # Step 2: Dynamic Web & Knowledge Lookups (Wikipedia + DuckDuckGo)
     if candidate:
+        cand_tokens = _tokenize(candidate)
+        is_generic_candidate = bool(cand_tokens and cand_tokens.issubset(GENERIC_TOKENS) and not offer_domain)
+
         wiki_res, ddg_res = await asyncio.gather(
             _wiki_lookup(candidate, s),
             _ddg_lookup(candidate, s),
@@ -285,11 +298,14 @@ async def check_entity_and_web(claims: dict, site: dict | None, s) -> dict:
         wiki = wiki_res if isinstance(wiki_res, dict) else None
         ddg = ddg_res if isinstance(ddg_res, dict) else None
 
-        if wiki or ddg:
+        if (wiki or ddg) and not is_generic_candidate:
             entity_title = (wiki and wiki.get("title")) or (ddg and ddg.get("heading")) or candidate
-            desc = (wiki and wiki.get("description")) or (ddg and ddg.get("abstract")) or "Verified entity in public directories."
+            desc = (wiki and wiki.get("description")) or (ddg and ddg.get("abstract")) or ""
             
-            # Check official URL from DDG if available
+            title_tokens = _tokenize(entity_title)
+            shared_title = cand_tokens.intersection(title_tokens)
+            is_corp_profile = any(k in desc.lower() for k in CORP_KEYWORDS)
+            
             ddg_url = (ddg and ddg.get("official_url")) or ""
             ddg_domain = None
             if ddg_url:
@@ -299,20 +315,38 @@ async def check_entity_and_web(claims: dict, site: dict | None, s) -> dict:
                     pass
 
             is_domain_match = bool(offer_domain and ddg_domain and offer_domain == ddg_domain)
-            return result(
-                "entity",
-                "Wikipedia & DuckDuckGo Knowledge",
-                "verified",
-                f"Entity verified: {entity_title}. {desc}" + (f" Official domain matches ({offer_domain})." if is_domain_match else ""),
-                data={
-                    "entity": entity_title,
-                    "description": desc,
-                    "entity_verified": True,
-                    "official_domain_match": is_domain_match,
-                    "impersonation_detected": False,
-                    "provider": "Knowledge Graph"
-                }
-            )
+            has_token_overlap = bool(shared_title and (len(shared_title) == len(cand_tokens) or len(shared_title) / max(1, len(cand_tokens)) >= 0.6))
+
+            if has_token_overlap and (is_corp_profile or is_domain_match):
+                return result(
+                    "entity",
+                    "Wikipedia & DuckDuckGo Knowledge",
+                    "verified",
+                    f"Entity verified: {entity_title}. {desc}" + (f" Official domain matches ({offer_domain})." if is_domain_match else ""),
+                    data={
+                        "entity": entity_title,
+                        "description": desc,
+                        "entity_verified": True,
+                        "official_domain_match": is_domain_match,
+                        "impersonation_detected": False,
+                        "provider": "Knowledge Graph"
+                    }
+                )
+
+        # No confident corporate match -> status unverified
+        return result(
+            "entity",
+            "Entity Directory",
+            "unverified",
+            f"Entity unverified: '{candidate}' was not verified as an official organization or established protocol.",
+            data={
+                "entity": candidate,
+                "entity_verified": False,
+                "official_domain_match": False,
+                "impersonation_detected": False,
+                "provider": "Entity Directory"
+            }
+        )
 
     # Step 3: Check site domain if present
     if offer_domain:

@@ -49,9 +49,9 @@ def severity(points: int) -> str:
 def _f(rid: str, points: int, observed: str, check: dict | None = None, *, status: str = "verified", evidence: dict | None = None, source: str | None = None) -> dict:
     title, why, explain = META[rid]
     return {"rule_id": rid, "title": title, "severity": severity(points), "points": points, "observed": observed, "why": why,
-            "explanation": explain, "source": source or (check["source"] if check else CLAIM_SRC),
-            "check_id": check["check_id"] if check else "claims", "status": status,
-            "timestamp": check["timestamp"] if check else now_iso(), "demo": bool(check and check.get("demo")),
+            "explanation": explain, "source": source or ((check.get("source") if check else None) or CLAIM_SRC),
+            "check_id": (check.get("check_id") if check else None) or "claims", "status": status,
+            "timestamp": (check.get("timestamp") if check else None) or now_iso(), "demo": bool(check and check.get("demo")),
             "evidence": evidence or {}}
 
 
@@ -352,6 +352,14 @@ def assess(claims: dict, checks: dict) -> dict:
     ent_data = (ent_check.get("data") or {}) if _ok(ent_check) else {}
     is_verified_entity = bool(ent_data.get("entity_verified") and ent_data.get("official_domain_match"))
     is_impersonation = bool(ent_data.get("impersonation_detected"))
+    mkt_check = checks.get("market")
+    mkt_verified = bool(_ok(mkt_check) and mkt_check.get("status") == "verified")
+    exp_check = checks.get("explorer")
+    exp_verified = bool(_ok(exp_check) and (exp_check.get("data") or {}).get("source_verified") is True)
+    sec_check = checks.get("security")
+    sec_verified = bool(_ok(sec_check) and (sec_check.get("data") or {}).get("honeypot") is False)
+    
+    has_positive_verification = is_verified_entity or mkt_verified or exp_verified or sec_verified
     has_critical_exploit = any(f["rule_id"] in ("HONEYPOT", "SECRETS_REQUESTED", "MALICIOUS_SITE", "BRAND_IMPERSONATION") and f["points"] > 0 for f in findings)
 
     # 3 distinct outcomes: verified-legit / suspicious / could-not-verify
@@ -366,23 +374,17 @@ def assess(claims: dict, checks: dict) -> dict:
         outcome_label = "Suspicious" if score < 50 else "Suspicious / High Risk"
         key, label = next((k, l) for t, k, l in LEVELS if score >= t)
         insufficient = False
-    elif cov["available"] == 0 or (score == 0 and not is_verified_entity and cov["available"] <= 1):
+    elif not has_positive_verification:
         outcome = "could-not-verify"
         outcome_label = "Could Not Verify (Inconclusive)"
         score = min(score, 20)  # Capped: never assume max risk on weak/missing evidence
         key, label = "insufficient", "Could Not Verify"
         insufficient = True
     else:
-        if score <= 20:
-            outcome = "verified-legit" if cov["available"] >= 2 else "could-not-verify"
-            outcome_label = "Low Risk / Likely Safe" if outcome == "verified-legit" else "Could Not Verify (Inconclusive)"
-            key, label = "low", "Low Risk"
-            insufficient = False
-        else:
-            outcome = "suspicious"
-            outcome_label = "Suspicious"
-            key, label = next((k, l) for t, k, l in LEVELS if score >= t)
-            insufficient = False
+        outcome = "verified-legit"
+        outcome_label = "Low Risk / Likely Safe"
+        key, label = "low", "Low Risk"
+        insufficient = False
 
     findings.sort(key=lambda f: -f["points"])
     cov_clean = {k: v for k, v in cov.items() if not k.startswith("_")}

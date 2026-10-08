@@ -108,8 +108,21 @@ def _num(s: str, mult: str | None) -> float:
 
 
 def _snippet(text: str, kw: str, width: int = 70) -> str:
-    i = text.lower().find(kw)
-    return text[max(0, i - 25): i + width].replace("\n", " ").strip() if i >= 0 else ""
+    i = text.lower().find(kw.lower())
+    if i < 0:
+        return ""
+    start = max(0, i - 25)
+    if start > 0:
+        space_idx = text.find(" ", start)
+        if space_idx != -1 and space_idx < i:
+            start = space_idx + 1
+    end = min(len(text), i + width)
+    if end < len(text):
+        space_idx = text.rfind(" ", i + len(kw), end)
+        if space_idx > i + len(kw):
+            end = space_idx
+    snip = text[start:end].replace("\n", " ").strip()
+    return snip
 
 
 def _prices(text: str) -> list[dict]:
@@ -169,27 +182,62 @@ def _period_days(text: str, near: int) -> float | None:
     return {"daily": 1, "weekly": 7, "monthly": 30}[m.group(1).lower()] if m and abs(m.start() - near) <= 80 else None
 
 
+NEGATORS_RX = re.compile(r"\b(?:not|no|never|isn['’]?t|aren['’]?t|don['’]?t|doesn['’]?t|won['’]?t|without|nothing\s+is|non-?|un-?)\b", re.I)
+ASSET_STOPWORDS = {"the", "our", "this", "that", "pool", "yield", "round", "community", "sale", "presale", "airdrop", "group", "admin", "chat", "telegram", "whatsapp", "link", "reward", "bonus", "cash", "money", "funds", "investment"}
+
+
 def heuristic_extract(text: str) -> dict:
     c, low = empty_claims(), text.lower()
-    # asset: an explicit "Name (SYM)" token beats a known coin that is merely mentioned (e.g. "on BNB Chain")
-    known_syms = {v[1] for v in KNOWN_ASSETS.values()}
-    tm = re.search(r"\b([A-Z][A-Za-z0-9]{2,20})\s*\(\$?([A-Z0-9]{2,8})\)", text)
-    if tm and tm.group(2) not in known_syms:
-        c.update(asset_name=tm.group(1), asset_symbol=tm.group(2))
+
+    # 1. Payment currency extraction (e.g., "Contribution range: 50 to 2,000 USDT")
+    PAYMENT_RX = re.compile(r"\b(?:contribut\w*|pay\w*|deposit\w*|send\w*|cost|price|range|fee)\s*(?:range|is|of|[:\s]+)?\s*(?:\d[\d,]*(?:\.\d+)?\s*(?:to|-|–)\s*)?\d[\d,]*(?:\.\d+)?\s*(USDT|USDC|USD|INR|EUR|GBP|DAI|BUSD)\b", re.I)
+    pay_match = PAYMENT_RX.search(text)
+    if pay_match:
+        c["quoted_currency"] = pay_match.group(1).upper()
+
+    # 2. Explicit offered asset patterns (priority over generic scan)
+    OFFERED_PATTERNS = [
+        re.compile(r"\b(?:convertible into|converted into|convert to|exchangeable for|redeemable for|claimable as|yields? in|earns? in|rewards? in|paid in|receive|buying|allocat\w* to|presale for|presale of|airdrop of|invest in)\s+(?:the\s+)?(?:\$)?([A-Z0-9]{2,10})\s*(?:token|coin)?\b", re.I),
+        re.compile(r"\b(?:the\s+)?(?:\$)?([A-Z0-9]{2,10})\s+(?:token|coin)\b", re.I),
+        re.compile(r"\b(?:token|coin)\s+(?:name|named|called|is|symbol)?[:\s]+(?:\$)?([A-Z0-9]{2,10})\b", re.I),
+        re.compile(r"\b([A-Z][A-Za-z0-9]{2,20})\s*\(\$?([A-Z0-9]{2,8})\)"),
+    ]
+    explicit_offered = None
+    for rx in OFFERED_PATTERNS:
+        m = rx.search(text)
+        if m:
+            sym_or_name = m.group(1) if len(m.groups()) == 1 else m.group(2)
+            if sym_or_name and sym_or_name.lower() not in ASSET_STOPWORDS:
+                if len(m.groups()) >= 2 and m.group(2):
+                    explicit_offered = (m.group(1), m.group(2).upper())
+                else:
+                    explicit_offered = (sym_or_name, sym_or_name.upper())
+                break
+
+    if explicit_offered:
+        offered_name, offered_sym = explicit_offered
+        matched_known = next(((aid, name, sym) for aid, (name, sym, _) in KNOWN_ASSETS.items() if sym.upper() == offered_sym or name.lower() == offered_name.lower()), None)
+        if matched_known:
+            c.update(asset_id=matched_known[0], asset_name=matched_known[1], asset_symbol=matched_known[2])
+        else:
+            c.update(asset_id=None, asset_name=offered_name, asset_symbol=offered_sym)
     else:
+        # Fallback: scan KNOWN_ASSETS (ignoring tokens mentioned solely as contribution payment methods)
         scan = re.sub(r"\b(bnb|binance|ethereum|polygon|solana|tron)\s+(chain|network|smart chain|mainnet)\b|\b(erc|bep)-?20\b", " ", low)
         hits = []
         for aid, (name, sym, rx) in KNOWN_ASSETS.items():
-            m = re.search(rx, scan)
-            if m:
+            for m in re.finditer(rx, scan):
+                if pay_match and pay_match.start() <= m.start() <= pay_match.end():
+                    continue
                 hits.append((m.start(), aid, name, sym))
         if hits:
             _, aid, name, sym = min(hits)
             c.update(asset_id=aid, asset_name=name, asset_symbol=sym)
         else:
             m = re.search(r"\b(?:token|coin)\s+(?:name|named|called|is)[:\s]+([A-Za-z0-9]{2,20})", text, re.I)
-            if m:
+            if m and m.group(1).lower() not in ASSET_STOPWORDS:
                 c["asset_name"] = m.group(1)
+
     # price & quantity
     market_p = offer_p = None
     for p in _prices(text):
@@ -211,16 +259,25 @@ def heuristic_extract(text: str) -> dict:
     if q and not re.match(r"\s*x\b", low[q.end(1):q.end(1) + 3]):
         c["quantity"] = float(q.group(1).replace(",", ""))
     elif offer_p and c["asset_name"] and not c["price_is_per_unit"] and not is_promo:
-        c["quantity_assumed"] = True  # "Bitcoin for 32 lakh" -> we assume 1 unit and say so
+        c["quantity_assumed"] = True
+
     # returns
     ret_pos = None
-    for m in re.finditer(r"(\d+(?:\.\d+)?)\s*%", text):
-        before, after = low[max(0, m.start() - 30):m.start()], low[m.end():m.end() + 25]
-        if re.search(r"referral|commission|fee|tax|bonus|discount", after) or re.search(r"referral|commission|fee|tax", before[-14:]):
-            continue
-        if any(w in before + after for w in RETURN_WORDS):
-            c["promised_return_pct"], ret_pos = float(m.group(1)), m.start()
-            break
+    range_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:–|-|—|to)\s*(\d+(?:\.\d+)?)\s*%", text)
+    if range_match:
+        before, after = low[max(0, range_match.start() - 30):range_match.start()], low[range_match.end():range_match.end() + 25]
+        if not (re.search(r"referral|commission|fee|tax|bonus|discount", after) or re.search(r"referral|commission|fee|tax", before[-14:])):
+            if any(w in before + after for w in RETURN_WORDS):
+                c["promised_return_pct"] = float(range_match.group(1))
+                ret_pos = range_match.start()
+    if c["promised_return_pct"] is None:
+        for m in re.finditer(r"(\d+(?:\.\d+)?)\s*%", text):
+            before, after = low[max(0, m.start() - 30):m.start()], low[m.end():m.end() + 25]
+            if re.search(r"referral|commission|fee|tax|bonus|discount", after) or re.search(r"referral|commission|fee|tax", before[-14:]):
+                continue
+            if any(w in before + after for w in RETURN_WORDS):
+                c["promised_return_pct"], ret_pos = float(m.group(1)), m.start()
+                break
     m = re.search(r"\b(\d+(?:\.\d+)?)\s*x\b", low)
     if m and float(m.group(1)) >= 1.5:
         c["promised_multiplier"], ret_pos = float(m.group(1)), ret_pos or m.start()
@@ -230,10 +287,17 @@ def heuristic_extract(text: str) -> dict:
         c["promised_multiplier"], ret_pos = 3.0, low.find("triple")
     if ret_pos is not None:
         c["return_period_days"] = _period_days(text, ret_pos)
-    # flags
+
+    # flags (with negation guard)
     for flag, kws in FLAGS.items():
+        flag_matched = False
         for kw in kws:
-            if kw in low:
+            for m in re.finditer(r"\b" + re.escape(kw) + r"\b", low):
+                start_pos = m.start()
+                pre_segment = low[max(0, start_pos - 40):start_pos]
+                clause_before = re.split(r"[.!?;\n]", pre_segment)[-1]
+                if NEGATORS_RX.search(clause_before):
+                    continue
                 if flag == "guaranteed_language":
                     retail_guarantees = ("money-back", "money back", "satisfaction", "uptime", "sla", "delivery", "authentic", "authenticity", "price match", "quality")
                     snippet = _snippet(text, kw).lower()
@@ -241,10 +305,18 @@ def heuristic_extract(text: str) -> dict:
                         continue
                 c[flag] = True
                 c["phrases"][flag] = _snippet(text, kw)
+                flag_matched = True
                 break
+            if flag_matched:
+                break
+        if not flag_matched:
+            c[flag] = False
+            c["phrases"].pop(flag, None)
+
     for label, kws in OTHER.items():
         if any(k in low for k in kws):
             c["other_flags"].append(label)
+
     # identifiers & entities
     m = re.search(r"\b0x[a-fA-F0-9]{40}\b", text)
     if m:
@@ -271,9 +343,13 @@ def heuristic_extract(text: str) -> dict:
         if em and em.group(1).lower() not in ("telegram", "whatsapp", "our", "the", "my", "this", "us"):
             c["entity_name"] = em.group(1)[:50]
     if not c["entity_name"]:
-        fm = re.match(r"^\s*([A-Z][A-Za-z0-9]{2,25})\b", text)
-        if fm and fm.group(1).lower() not in ("dear", "hello", "hi", "hey", "warning", "notice", "official", "welcome", "selling", "buying", "invest", "urgent"):
-            c["entity_name"] = fm.group(1)
+        tm = re.match(r"^\s*([A-Z][A-Za-z0-9]+(?:\s+[A-Z][A-Za-z0-9]+){1,3})\b", text)
+        if tm and tm.group(1).lower() not in ("dear friends", "special offer", "official announcement", "limited offer"):
+            c["entity_name"] = tm.group(1)
+        else:
+            fm = re.match(r"^\s*([A-Z][A-Za-z0-9]{2,25})\b", text)
+            if fm and fm.group(1).lower() not in ("dear", "hello", "hi", "hey", "warning", "notice", "official", "welcome", "selling", "buying", "invest", "urgent"):
+                c["entity_name"] = fm.group(1)
     c["price_verbatim"] = is_price_verbatim(c.get("claimed_price"), text)
     return c
 

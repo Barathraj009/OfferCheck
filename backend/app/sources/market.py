@@ -78,15 +78,17 @@ async def _coingecko(claims: dict, s) -> dict:
                 raise
             if not (name or aid):
                 return result("market", SRC, "not_found", "The contract is not listed on CoinGecko.", data={"queried": addr, "provider": "CoinGecko"})
-    if not (name or aid):
-        raise SourceError("No asset name or contract address to look up.", "error")
+    if not (name or aid or sym):
+        raise SourceError("No asset name, symbol or contract address to look up.", "error")
     cid = aid
     if not cid:
-        sr = await _get(s, "/search", {"query": name})
+        query = name or sym
+        sr = await _get(s, "/search", {"query": query})
         q = (name or "").lower()
-        match = next((c for c in (sr or {}).get("coins", []) if c.get("name", "").lower() == q or c.get("symbol", "").lower() == q or (sym and c.get("symbol", "").lower() == sym.lower())), None)
+        sym_q = (sym or "").lower()
+        match = next((c for c in (sr or {}).get("coins", []) if (q and c.get("name", "").lower() == q) or (sym_q and c.get("symbol", "").lower() == sym_q)), None)
         if not match:
-            return result("market", SRC, "not_found", "No exact match on CoinGecko.", data={"queried": name, "provider": "CoinGecko"})
+            return result("market", SRC, "not_found", "No exact match on CoinGecko.", data={"queried": query, "provider": "CoinGecko"})
         cid = match["id"]
     p = await _price_by_id(s, cid)
     if not p:
@@ -176,8 +178,8 @@ def _f(v):
 
 
 async def check_market(claims: dict, s) -> dict:
-    if not (claims.get("contract_address") or claims.get("asset_name") or claims.get("asset_id")):
-        return result("market", SRC, "not_applicable", "No asset name or contract provided.", reason="No asset name or contract address provided.")
+    if not (claims.get("contract_address") or claims.get("asset_name") or claims.get("asset_symbol") or claims.get("asset_id")):
+        return result("market", SRC, "not_applicable", "No asset name, symbol or contract provided.", reason="No asset name, symbol or contract address provided.")
     provs: list[tuple[str, object]] = [("CoinGecko", _coingecko)]
     if claims.get("contract_address") and claims.get("chain") in CHAINS:
         provs.append(("DexScreener", _dexscreener))

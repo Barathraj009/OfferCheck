@@ -56,10 +56,14 @@ EXTRACT_SYS = (
 )
 
 SUMMARY_SYS = (
-    "You explain a cryptocurrency-offer verification report to a non-technical reader. Use ONLY facts present in the JSON. "
-    "Do not add numbers, prices, sources or claims. Never tell the reader to buy, sell or invest, never say anything is guaranteed, "
-    "and never accuse a person of a crime. Say this is a risk assessment, not proof of fraud, and that unavailable checks lower confidence. "
-    "Write 100-170 words of plain prose, no markdown. Write in {lang}."
+    "You explain the findings of a cryptocurrency offer risk report in 2-3 short, clear paragraphs of plain prose. "
+    "Focus on explaining what the OFFER claims and what the VERIFIED FINDINGS detected. "
+    "Do NOT output JSON, markdown symbols (#, *, `, _), bullet points, or section headings. "
+    "Use ONLY facts and evidence present in the findings. "
+    "Never introduce terms, promises, or quotes (such as 'risk-free' or 'guaranteed') unless they appear in the findings. "
+    "Never tell the reader to buy, sell, or invest, and never accuse anyone of a crime. "
+    "State clearly that this is an informational risk assessment, not proof of fraud, and that unavailable checks lower confidence. "
+    "Write 100-170 words of plain prose in {lang}."
 )
 
 _ALLOWED = {
@@ -503,6 +507,49 @@ async def extract_claims_llm(text: str, s) -> tuple[dict, str] | None:
         return None
 
 
+def _clean_summary_prose(txt: str, report_core: dict) -> str | None:
+    txt = txt.strip()
+    if not txt:
+        return None
+    # 1. Check if model returned JSON
+    if (txt.startswith("{") and txt.endswith("}")) or ("```json" in txt):
+        raw_json = re.sub(r"^```(?:json)?\s*", "", txt, flags=re.I)
+        raw_json = re.sub(r"\s*```$", "", raw_json).strip()
+        try:
+            m = re.search(r"\{.*\}", raw_json, re.S)
+            if m:
+                d = json.loads(m.group(0))
+                if isinstance(d, dict):
+                    chunks = [str(v).strip() for v in d.values() if isinstance(v, str) and len(str(v).strip()) > 10]
+                    txt = " ".join(chunks) if chunks else ""
+        except Exception:
+            return None
+
+    # 2. Strip markdown headers, asterisks, backticks
+    clean = re.sub(r"[#*_`]", "", txt).strip()
+    clean = re.sub(r"^\s*[{}]+\s*", "", clean)
+    if not clean or clean.startswith("{") or len(clean) < 20:
+        return None
+
+    # 3. Post-check hallucinated quotes: every quoted phrase must exist in findings or claims
+    findings_text = " ".join(str(f.get("title", "")) + " " + str(f.get("observed", "")) + " " + str(f.get("why", "")) + " " + json.dumps(f.get("evidence", {})) for f in report_core.get("findings", []))
+    core_text = (findings_text + " " + json.dumps(report_core)).lower()
+
+    quotes = re.findall(r'["“]([^"”]{3,50})["”]', clean)
+    for q in quotes:
+        if q.lower().strip() not in core_text:
+            clean = clean.replace(f'"{q}"', q).replace(f'“{q}”', q)
+
+    # 4. Guard against hallucinating guaranteed/risk-free when no such finding exists
+    has_guar_finding = any("guarantee" in str(f.get("rule_id", "")).lower() for f in report_core.get("findings", []))
+    if not has_guar_finding:
+        if re.search(r"\b(?:risk[- ]free|zero risk)\b", clean, re.I):
+            clean = re.sub(r"\b(?:promises?|claims?|offers?)\s+(?:a\s+)?risk[- ]free(?:\s+return)?\b", "presents unverified claims", clean, flags=re.I)
+            clean = re.sub(r"\brisk[- ]free\b", "unverified", clean, flags=re.I)
+
+    return clean[:1800]
+
+
 async def summarize_llm(report_core: dict, language: str, s) -> tuple[str, str] | None:
     """Returns (text, provider name) or None. One cached call per distinct report."""
     if s.llm_provider == "none":
@@ -521,5 +568,5 @@ async def summarize_llm(report_core: dict, language: str, s) -> tuple[str, str] 
     except SourceError as e:
         log.warning("llm summary failed: %s", e.kind)
         return None
-    clean = re.sub(r"[#*_`]", "", txt).strip()[:1800]
+    clean = _clean_summary_prose(txt, report_core)
     return (clean, provider) if clean else None
