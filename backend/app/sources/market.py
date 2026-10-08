@@ -53,11 +53,26 @@ async def _coingecko(claims: dict, s) -> dict:
         try:
             d = await _get(s, f"/coins/{CHAINS[chain]['cg']}/contract/{addr}", {"localization": "false", "tickers": "false", "community_data": "false", "developer_data": "false"})
             md = d.get("market_data") or {}
+            prices = {k: md.get("current_price", {}).get(k) for k in VS.split(",")}
+            usd_val = _f(prices.get("usd"))
+            fx_used = False
+            if usd_val and any(prices.get(c) is None for c in FX_CURS):
+                try:
+                    fx_prices = await _prices_from_usd(s, usd_val)
+                    for c, v in fx_prices.items():
+                        if prices.get(c) is None and v is not None:
+                            prices[c] = v
+                            fx_used = True
+                except Exception:
+                    pass
             coin = {"id": d.get("id"), "name": d.get("name"), "symbol": (d.get("symbol") or "").upper(),
-                    "prices": {k: md.get("current_price", {}).get(k) for k in VS.split(",")},
+                    "prices": prices,
                     "market_cap_usd": (md.get("market_cap") or {}).get("usd"), "volume_24h_usd": (md.get("total_volume") or {}).get("usd"),
-                    "provider": "CoinGecko", "fx_converted": False}
-            return result("market", SRC, "verified", f"{coin['name']} found. USD {coin['prices'].get('usd')}, INR {coin['prices'].get('inr')}.", data=coin)
+                    "provider": "CoinGecko", "fx_converted": fx_used}
+            summary = f"{coin['name']} found. USD {coin['prices'].get('usd')}, INR {coin['prices'].get('inr')}."
+            if claims.get("claimed_price") is None:
+                summary += " Offer price not detected — add it to run the price check."
+            return result("market", SRC, "verified", summary, data=coin)
         except SourceError as e:
             if e.kind != "not_found":
                 raise
@@ -76,10 +91,25 @@ async def _coingecko(claims: dict, s) -> dict:
     p = await _price_by_id(s, cid)
     if not p:
         return result("market", SRC, "not_found", "No price data returned.", data={"queried": cid, "provider": "CoinGecko"})
-    coin = {"id": cid, "name": name, "symbol": sym, "prices": {k: p.get(k) for k in VS.split(",")},
+    prices = {k: p.get(k) for k in VS.split(",")}
+    usd_val = _f(prices.get("usd"))
+    fx_used = False
+    if usd_val and any(prices.get(c) is None for c in FX_CURS):
+        try:
+            fx_prices = await _prices_from_usd(s, usd_val)
+            for c, v in fx_prices.items():
+                if prices.get(c) is None and v is not None:
+                    prices[c] = v
+                    fx_used = True
+        except Exception:
+            pass
+    coin = {"id": cid, "name": name, "symbol": sym, "prices": prices,
             "market_cap_usd": p.get("usd_market_cap"), "volume_24h_usd": p.get("usd_24h_vol"),
-            "provider": "CoinGecko", "fx_converted": False}
-    return result("market", SRC, "verified", f"{coin['name'] or coin['id']} found. USD {coin['prices'].get('usd')}, INR {coin['prices'].get('inr')}.", data=coin)
+            "provider": "CoinGecko", "fx_converted": fx_used}
+    summary = f"{coin['name'] or coin['id']} found. USD {coin['prices'].get('usd')}, INR {coin['prices'].get('inr')}."
+    if claims.get("claimed_price") is None:
+        summary += " Offer price not detected — add it to run the price check."
+    return result("market", SRC, "verified", summary, data=coin)
 
 
 async def _price_by_id(s, cid):
@@ -107,9 +137,10 @@ async def _dexscreener(claims: dict, s) -> dict:
             "provider": "DexScreener", "fx_converted": len(prices) > 1,
             "fx_note": "Converted from USD using ECB reference rates (Frankfurter)." if len(prices) > 1 else None,
             "pair_count": len(pairs)}
-    return result("market", "DexScreener", "verified",
-                  f"{data['name']} priced from {len(pairs)} DEX pair(s): USD {usd}." + (" Converted to other currencies via ECB rates." if len(prices) > 1 else ""),
-                  data=data)
+    summary = f"{data['name']} priced from {len(pairs)} DEX pair(s): USD {usd}." + (" Converted to other currencies via ECB rates." if len(prices) > 1 else "")
+    if claims.get("claimed_price") is None:
+        summary += " Offer price not detected — add it to run the price check."
+    return result("market", "DexScreener", "verified", summary, data=data)
 
 
 async def _binance(claims: dict, s) -> dict:
@@ -131,9 +162,10 @@ async def _binance(claims: dict, s) -> dict:
     data = {"id": None, "name": claims.get("asset_name"), "symbol": sym, "prices": prices,
             "market_cap_usd": None, "volume_24h_usd": None, "provider": "Binance", "fx_converted": len(prices) > 1,
             "fx_note": "Converted from USD using ECB reference rates (Frankfurter)." if len(prices) > 1 else None}
-    return result("market", "Binance", "verified",
-                  f"{sym} priced at USD {usd} on the exchange." + (" Converted to other currencies via ECB rates." if len(prices) > 1 else ""),
-                  data=data)
+    summary = f"{sym} priced at USD {usd} on the exchange." + (" Converted to other currencies via ECB rates." if len(prices) > 1 else "")
+    if claims.get("claimed_price") is None:
+        summary += " Offer price not detected — add it to run the price check."
+    return result("market", "Binance", "verified", summary, data=data)
 
 
 def _f(v):

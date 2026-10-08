@@ -27,6 +27,8 @@ CUR = {"₹": "INR", "rs": "INR", "rs.": "INR", "inr": "INR", "rupee": "INR", "r
 _M = r"(?:lakhs?|lacs?|crores?|cr|k|mn|million|thousand|billion|m)"
 PRICE_PRE = re.compile(r"(?<![A-Za-z])(?P<cur>₹|rs\.?|inr|usd|eur|gbp|[$€£])\s*(?P<num>\d[\d,]*(?:\.\d+)?)\s*(?P<mult>" + _M + r"\b)?", re.I)
 PRICE_POST = re.compile(r"(?P<num>\d[\d,]*(?:\.\d+)?)\s*(?P<mult>" + _M + r"\b)?\s*(?P<cur>rupees|inr|usd|dollars|euros?|eur|gbp|pounds)\b", re.I)
+PRICE_LAKH = re.compile(r"(?<![A-Za-z0-9])(?P<num>\d[\d,]*(?:\.\d+)?)\s*(?P<mult>lakhs?|lacs?|crores?|cr)\b", re.I)
+PRICE_FOR = re.compile(r"(?:\b(?:for|at|only|pay|cost|worth|price(?:\s+is|[:\s]+)?)\s+|@\s*)(?:(?P<cur>₹|rs\.?|inr|usd|eur|gbp|[$€£])\s*)?(?P<num>\d[\d,]*(?:\.\d+)?)\s*(?P<mult>" + _M + r"\b)?(?:\s*(?P<post_cur>rupees|inr|usd|dollars|euros?|eur|gbp|pounds))?\b", re.I)
 MARKET_WORDS = ("market", "worth", "normally", "usually", "instead of", "actual", "real price", "trading at", "spot", "current price")
 RETURN_WORDS = ("return", "profit", "roi", "interest", "gain", "growth", "yield", "earn", "income", "double", "triple")
 
@@ -67,6 +69,7 @@ def _snippet(text: str, kw: str, width: int = 70) -> str:
 
 def _prices(text: str) -> list[dict]:
     found = []
+    # 1. PRE & POST explicit currency
     for rx in (PRICE_PRE, PRICE_POST):
         for m in rx.finditer(text):
             try:
@@ -76,6 +79,31 @@ def _prices(text: str) -> list[dict]:
             cur = CUR.get(m.group("cur").lower().strip())
             if cur and val > 0:
                 found.append({"start": m.start(), "end": m.end(), "value": val, "cur": cur})
+    # 2. Indian units (lakh / crore)
+    for m in PRICE_LAKH.finditer(text):
+        try:
+            val = _num(m.group("num"), m.group("mult"))
+        except (ValueError, KeyError):
+            continue
+        if val > 0:
+            found.append({"start": m.start(), "end": m.end(), "value": val, "cur": "INR"})
+    # 3. Contextual for/at/@/price keywords
+    has_inr_hint = bool(re.search(r"₹|rs\b|inr\b|rupee", text, re.I))
+    for m in PRICE_FOR.finditer(text):
+        try:
+            val = _num(m.group("num"), m.group("mult"))
+        except (ValueError, KeyError):
+            continue
+        raw_cur = m.group("cur") or m.group("post_cur")
+        cur = CUR.get(raw_cur.lower().strip()) if raw_cur else None
+        if not cur:
+            mult = (m.group("mult") or "").lower()
+            if mult in ("lakh", "lakhs", "lac", "lacs", "crore", "crores", "cr") or has_inr_hint:
+                cur = "INR"
+            else:
+                cur = "USD"
+        if val > 0:
+            found.append({"start": m.start(), "end": m.end(), "value": val, "cur": cur})
     found.sort(key=lambda p: p["start"])
     out = []
     for p in found:  # drop overlaps

@@ -62,7 +62,7 @@ function claimRows(c: Claims): [string, string][] {
   const rows: [string, string | null][] = [
     ["Company / Brand", c.entity_name ?? null],
     ["Asset", c.asset_name ? `${c.asset_name}${c.asset_symbol ? ` (${c.asset_symbol})` : ""}` : null],
-    ["Price asked", c.claimed_price != null ? `${c.quoted_currency ?? ""} ${c.claimed_price.toLocaleString("en-IN")}${c.quantity ? ` for ${c.quantity} unit(s)` : c.quantity_assumed ? " (quantity not stated; 1 unit assumed)" : ""}` : null],
+    ["Price asked", c.claimed_price != null ? `${c.quoted_currency ?? ""} ${c.claimed_price.toLocaleString("en-IN")}${c.quantity ? ` for ${c.quantity} unit(s)` : c.quantity_assumed ? " (quantity not stated; 1 unit assumed)" : ""}` : (c.asset_name || c.asset_symbol || c.contract_address) ? "Offer price not detected — add it to run the price check" : null],
     ["Market price the seller states", c.claimed_market_price != null ? `${c.quoted_currency ?? ""} ${c.claimed_market_price.toLocaleString("en-IN")}` : null],
     ["Promised return", c.promised_multiplier ? `${c.promised_multiplier}x` : c.promised_return_pct ? `${c.promised_return_pct}%` : null],
     ["Time period", c.return_period_days ? `${c.return_period_days} day(s)` : null],

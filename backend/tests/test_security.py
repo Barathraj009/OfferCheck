@@ -282,6 +282,20 @@ class LlmGuardTests(unittest.TestCase):
         self.assertTrue(out2.get("limited_time"))
         self.assertEqual(out2.get("phrases", {}).get("limited_time"), "Limited time deal ends Sunday")
 
+    def test_validate_llm_claims_parses_price_strings_and_symbols(self):
+        """Model output with currency symbols or string numbers must be parsed, not dropped."""
+        c1 = validate_llm_claims({"asset_name": "Bitcoin", "claimed_price": "₹30,000", "quoted_currency": "INR"})
+        self.assertEqual(c1["claimed_price"], 30000.0)
+        self.assertEqual(c1["quoted_currency"], "INR")
+
+        c2 = validate_llm_claims({"asset_name": "Bitcoin", "claimed_price": "1.5 lakh"})
+        self.assertEqual(c2["claimed_price"], 150000.0)
+        self.assertEqual(c2["quoted_currency"], "INR")
+
+        c3 = validate_llm_claims({"promised_multiplier": "10x", "promised_return_pct": "100%"})
+        self.assertEqual(c3["promised_multiplier"], 10.0)
+        self.assertEqual(c3["promised_return_pct"], 100.0)
+
 
 class SecurityVulnerabilityTests(unittest.TestCase):
     def test_ssrf_validator_blocks_private_ips_and_insecure_schemes(self):
