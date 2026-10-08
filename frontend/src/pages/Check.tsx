@@ -1,19 +1,17 @@
-import { Dispatch, FormEvent, ReactNode, SetStateAction, useEffect, useRef, useState } from "react";
-import { ApiError, getScenarios, ocrImage } from "../api";
-import type { FieldError, FormState, Health, Scenario } from "../types";
+import { Dispatch, FormEvent, SetStateAction, useState, useRef } from "react";
+import type { FieldError, FormState, Health } from "../types";
+import { getHealth } from "../api";
 
-// speech = BCP-47 for the browser's speech recogniser; ocr = Tesseract language pack; code = explanation language
 const LANGS = [
-  { label: "English", speech: "en-IN", ocr: "eng", code: "en" }, { label: "हिन्दी (Hindi)", speech: "hi-IN", ocr: "hin", code: "hi" },
-  { label: "தமிழ் (Tamil)", speech: "ta-IN", ocr: "tam", code: "ta" }, { label: "తెలుగు (Telugu)", speech: "te-IN", ocr: "tel", code: "te" },
-  { label: "বাংলা (Bengali)", speech: "bn-IN", ocr: "ben", code: "bn" }, { label: "मराठी (Marathi)", speech: "mr-IN", ocr: "mar", code: "mr" },
-  { label: "ગુજરાતી (Gujarati)", speech: "gu-IN", ocr: "guj", code: "gu" }, { label: "ಕನ್ನಡ (Kannada)", speech: "kn-IN", ocr: "kan", code: "kn" },
-  { label: "മലയാളം (Malayalam)", speech: "ml-IN", ocr: "mal", code: "ml" }, { label: "ਪੰਜਾਬੀ (Punjabi)", speech: "pa-IN", ocr: "pan", code: "pa" },
+  { label: "English", speech: "en-IN", ocr: "eng", code: "en" },
+  { label: "Hindi", speech: "hi-IN", ocr: "hin", code: "hi" },
+  { label: "Tamil", speech: "ta-IN", ocr: "tam", code: "ta" },
 ];
+
 const SOURCE_LABEL: Record<string, string> = {
-  etherscan: "Etherscan layer (optional API key; Sourcify and public RPCs verify without it)",
-  safe_browsing: "Google Safe Browsing (optional API key; the OpenPhish phishing feed is used without it)",
-  llm: "AI claim reading & explanation (free with a local Ollama model, or an optional Anthropic key)",
+  etherscan: "Etherscan (optional API key)",
+  safe_browsing: "Google Safe Browsing (optional)",
+  llm: "AI claim reading (free local Ollama)",
 };
 
 interface Props {
@@ -25,161 +23,228 @@ interface Props {
   onSubmit: (f: FormState) => void;
 }
 
-function Field({ id, label, hint, error, children }: { id: string; label: string; hint?: string; error?: string; children: ReactNode }) {
-  return (
-    <div>
-      <label htmlFor={id} className="mb-1 block font-semibold">{label}</label>
-      {hint && <p id={`${id}-hint`} className="mb-1 text-sm text-muted">{hint}</p>}
-      {children}
-      {error && <p id={`${id}-err`} role="alert" className="mt-1 text-sm font-medium text-signal">{error}</p>}
-    </div>
-  );
-}
-
-export default function Check({ form, setForm, health, healthErr, error, onSubmit }: Props) {
-  const [scenarios, setScenarios] = useState<Scenario[]>([]);
-  const [listening, setListening] = useState(false);
-  const [note, setNote] = useState<string | null>(null);
-  const [ocrBusy, setOcrBusy] = useState(false);
+export default function Check({ form, setForm, error, onSubmit }: Props) {
+  // Primary text: first cell is the main input, additional cells are extra
+  const [textCells, setTextCells] = useState<string[]>([form.text || ""]);
   const [localErr, setLocalErr] = useState<string | null>(null);
+  const [voiceBusy, setVoiceBusy] = useState(false);
+  const [voiceText, setVoiceText] = useState("");
+  const [showVoice, setShowVoice] = useState(false);
+  const [website, setWebsite] = useState(form.website || "");
+  const [tokenCont, setTokenCont] = useState(form.tokenCont || "");
   const rec = useRef<any>(null);
-  const lang = LANGS.find((l) => l.code === form.lang) ?? LANGS[0];
+  const lang = LANGS.find((l) => l.code === form.lang) || LANGS[0];
 
-  useEffect(() => { getScenarios().then(setScenarios).catch(() => setScenarios([])); }, []);
-  useEffect(() => () => rec.current?.stop?.(), []);
+  // ---- Text cell management ----
+  const updateCell = (i: number, value: string) => {
+    const next = [...textCells];
+    next[i] = value.trim();
+    setTextCells(next);
+  };
 
-  const set = (k: keyof FormState, v: string) => setForm((f) => ({ ...f, [k]: v, demo_scenario: null })); // editing clears the sample link
-  const errFor = (f: string) => (error?.field === f ? error.message : undefined);
+  const addTextCell = () => {
+    if (textCells.length >= 10) return;
+    setTextCells([...textCells, ""]);
+  };
 
-  function loadSample(s: Scenario) {
-    setLocalErr(null);
-    setForm((f) => ({ ...f, ...s.inputs, mode: "demo", demo_scenario: s.id }));
-  }
+  const removeTextCell = (i: number) => {
+    if (textCells.length <= 1) return;
+    const next = textCells.filter((_, idx) => idx !== i);
+    setTextCells(next);
+    // also clear form.text if we're removing the main cell
+    if (i === 0) setForm((f) => ({ ...f, text: next.join("\n\n") }));
+  };
 
-  function toggleVoice() {
-    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SR) { setNote("Voice input is not supported in this browser. Try Chrome or Edge, or type the offer instead."); return; }
-    if (listening) { rec.current?.stop(); return; }
-    const r = new SR();
-    r.lang = lang.speech; r.continuous = true; r.interimResults = false;
-    r.onresult = (e: any) => {
-      let t = "";
-      for (let i = e.resultIndex; i < e.results.length; i++) if (e.results[i].isFinal) t += e.results[i][0].transcript + " ";
-      if (t) setForm((f) => ({ ...f, text: (f.text + " " + t).trim(), demo_scenario: null }));
-    };
-    r.onerror = (e: any) => setNote(e.error === "not-allowed" ? "Microphone permission was denied." : "Voice input stopped (" + e.error + "). You can type instead.");
-    r.onend = () => setListening(false);
-    rec.current = r; setNote("Listening… speak the offer, then press Stop. Speech is transcribed by your browser (it may use its online service). Check the text below before analysing - speech recognition can make mistakes."); setListening(true); r.start();
-  }
+  // ---- Voice input ----
+  const toggleVoice = async () => {
+    setVoiceBusy(!voiceBusy);
+    if (voiceBusy) { rec.current?.stop(); return; }
 
-  async function onFile(file: File | undefined) {
-    if (!file) return;
-    setOcrBusy(true); setNote(null);
+    // Use Whisper STT backend: capture microphone audio, send to /api/whisper-transcribe
     try {
-      const { text, empty } = await ocrImage(file, lang.ocr);
-      if (empty) setNote("No readable text was found in that image. Try a clearer screenshot or type the text.");
-      else { setForm((f) => ({ ...f, text: (f.text ? f.text + "\n" : "") + text, demo_scenario: null })); setNote("Text was extracted from your image and added below. Please read it and correct any mistakes before analysing."); }
-    } catch (e) { setNote((e as ApiError).message); }
-    finally { setOcrBusy(false); }
-  }
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 16000 },
+      });
+      rec.current = stream;
+
+      const mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/wav" });
+      const chunks: Blob[] = [];
+      mediaRecorder.ondataavailable = (e) => chunks.push(e.data);
+      mediaRecorder.onstop = async () => {
+        setVoiceBusy(true);
+        setShowVoice(true);
+        // Send recorded audio to Whisper backend
+        const formData = new FormData();
+        formData.append("file", chunks[0], "recording.wav");
+        const resp = await fetch("/api/whisper-transcribe", {
+          method: "POST",
+          body: formData,
+        });
+        if (!resp.ok) throw new Error("Whisper transcription failed");
+        const data = await resp.json();
+        setVoiceText(data.text || "");
+        setVoiceBusy(false);
+        setShowVoice(false);
+      };
+      mediaRecorder.start();
+
+      // Auto-stop after 10 seconds
+      const timeoutId = setTimeout(() => {
+        mediaRecorder.stop();
+        clearTimeout(timeoutId);
+      }, 10000);
+      return;
+    } catch (err) {
+      // Fall back to browser SpeechRecognition if mic fails
+      const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      if (!SR) { setVoiceBusy(false); setLocalErr("Voice not supported - no microphone"); return; }
+      const r = new SR();
+      r.lang = lang.speech;
+      r.continuous = true;
+      r.interimResults = false;
+      r.onresult = (e: any) => {
+        let t = "";
+        for (let i = e.resultIndex; i < e.results.length; i++)
+          if (e.results[i].isFinal) t += e.results[i][0].transcript + " ";
+        setVoiceText(t);
+      };
+      r.onend = () => { setVoiceBusy(false); };
+      r.start();
+    }
+  };
+
+  const checkWhisperAvailability = async (): Promise<boolean> => {
+    try {
+      const resp = await fetch("/api/whisper/health", {
+        method: "GET",
+        headers: { "ngrok-skip-browser-warning": "1" },
+        timeout: 5000,
+      });
+      return resp.ok;
+    } catch {
+      return false;
+    }
+  };
+
+const insertVoiceText = () => {
+    const t = voiceText.trim();
+    if (!t) return;
+    // Insert into the first (main) cell
+    setTextCells((prev) => {
+      const next = [...prev];
+      next[0] = (next[0] ? next[0] + " " : "") + t;
+      return next;
+    });
+    setVoiceText("");
+    setVoiceBusy(false);
+    setShowVoice(false);
+  };
 
   function submit(e: FormEvent) {
     e.preventDefault();
-    if (!(form.text.trim() || form.url.trim() || form.token_name.trim() || form.contract_address.trim())) {
-      setLocalErr("Add something to check: describe the offer, or enter a website, token name or contract address."); return;
+    // Combine all text cells
+    const combined = textCells.map((c) => c.trim()).filter(Boolean).join("\n\n");
+    // Also include website and token/contract if provided
+    const websiteClean = website.trim();
+    const tokenClean = tokenCont.trim();
+    
+    // Build the full input string for submission
+    const parts: string[] = [];
+    if (combined) parts.push(combined);
+    if (websiteClean) parts.push("WEBSITE: " + websiteClean);
+    if (tokenClean) parts.push("TOKEN/CONTRACT: " + tokenClean);
+    
+    const fullInput = parts.join("\n\n");
+    if (!combined && !websiteClean && !tokenClean) {
+      setLocalErr("Enter at least one offer message"); return;
     }
-    setLocalErr(null); onSubmit(form);
+    setLocalErr(null);
+    // Pass the full text to onSubmit - the backend will parse it
+    setForm({ ...form, text: fullInput });
+    onSubmit({ ...form, text: fullInput });
   }
 
-  const missing = health ? Object.entries(SOURCE_LABEL).filter(([k]) => !health.sources[k]).map(([, v]) => v) : [];
-  const generalErr = localErr ?? (error && !error.field ? error.message : undefined) ?? (error?.field === "text" ? error.message : undefined);
+  const generalErr = localErr ?? (error && !error.field ? error.message : undefined);
 
   return (
     <main id="main" tabIndex={-1} className="mx-auto max-w-3xl px-4 py-10">
-      <h1 className="text-3xl font-bold md:text-4xl">Check an offer</h1>
-      <p className="mt-2 text-muted">Give us whatever you have. More details mean more checks can run and confidence will be higher.</p>
-      {healthErr && <p role="alert" className="mt-4 rounded-md border border-signal/40 bg-signal-tint p-3 text-signal">{healthErr}</p>}
-
-      <section aria-labelledby="samples" className="mt-6 card p-4">
-        <h2 id="samples" className="text-lg font-semibold">Try a sample</h2>
-        <p className="text-sm text-muted">Sample scenarios use simulated data and are always labelled "DEMO DATA, NOT LIVE VERIFICATION".</p>
-        <div className="mt-3 flex flex-wrap gap-2">
-          {scenarios.map((s) => (
-            <button key={s.id} type="button" onClick={() => loadSample(s)} className={`btn-ghost text-left ${form.demo_scenario === s.id ? "ring-2 ring-brand" : ""}`} title={s.blurb}>{s.title}</button>
-          ))}
-          {scenarios.length === 0 && <span className="text-sm text-muted">Samples load when the backend is running.</span>}
-        </div>
-      </section>
-
-      <form onSubmit={submit} noValidate className="mt-6 space-y-8">
-        <fieldset className="card p-4">
-          <legend className="px-1 text-lg font-semibold">Verification mode</legend>
-          <div className="mt-1 grid gap-3 sm:grid-cols-2">
-            {(["demo", "live"] as const).map((m) => (
-              <label key={m} className={`flex cursor-pointer gap-3 rounded-md border p-3 ${form.mode === m ? "border-brand bg-brand-tint" : "border-rule"}`}>
-                <input type="radio" name="mode" value={m} checked={form.mode === m} onChange={() => setForm((f) => ({ ...f, mode: m, demo_scenario: m === "live" ? null : f.demo_scenario }))} className="mt-1 h-4 w-4 accent-[#0B5D4E]" />
-                <span><span className="block font-semibold">{m === "demo" ? "Demo mode" : "Live verification"}</span>
-                  <span className="text-sm text-muted">{m === "demo" ? "Simulated sample data. No API calls." : "Real lookups from public data sources."}</span></span>
-              </label>
-            ))}
-          </div>
-          {form.mode === "live" && missing.length > 0 && (
-            <p className="mt-3 text-sm text-muted">Not configured on this server (optional extras only - every check still runs with free sources): {missing.join("; ")}.</p>
-          )}
-        </fieldset>
-
+      <h1 className="text-3xl font-bold md:text-4xl">Verify Before You Trust</h1>
+      <p className="mt-2 text-muted">Give OfferCheck whatever you have. We'll figure out what needs to be checked.</p>
+      <form onSubmit={submit} noValidate className="mt-6 space-y-6">
         <section aria-labelledby="s1" className="space-y-4">
-          <h2 id="s1" className="text-xl font-semibold">1. What was offered?</h2>
-          <Field id="lang" label="Language of the offer" hint="Used for voice input and screenshot text. The written explanation follows it too when an AI model is available.">
-            <select id="lang" className="field sm:max-w-xs" value={form.lang} onChange={(e) => setForm((f) => ({ ...f, lang: e.target.value }))}>
-              {LANGS.map((l) => <option key={l.code} value={l.code}>{l.label}</option>)}
-            </select>
-          </Field>
-          <Field id="text" label="Offer text" hint="Paste the message, or use voice or a screenshot below." error={generalErr}>
-            <textarea id="text" rows={6} maxLength={health?.max_input_chars ?? 6000} className="field" value={form.text} onChange={(e) => set("text", e.target.value)}
-              placeholder="e.g. Buy Bitcoin for ₹40 lakh instead of the market price. Guaranteed to double your money in 30 days. Refer 3 friends and receive commission."
-              aria-describedby={generalErr ? "text-err text-hint" : "text-hint"} aria-invalid={!!generalErr} />
-          </Field>
-          <div className="flex flex-wrap items-center gap-3">
-            <button type="button" onClick={toggleVoice} aria-pressed={listening} className={listening ? "btn bg-signal text-white" : "btn-ghost"}>{listening ? "Stop listening" : "Speak the offer"}</button>
-            <label className={`btn-ghost cursor-pointer ${ocrBusy ? "opacity-60" : ""}`}>
-              {ocrBusy ? "Reading image…" : "Upload a screenshot"}
-              <input type="file" accept="image/png,image/jpeg,image/webp" className="sr-only" disabled={ocrBusy} onChange={(e) => { onFile(e.target.files?.[0]); e.target.value = ""; }} />
-            </label>
-            <span className="text-sm text-muted">PNG, JPG or WebP, up to 5 MB</span>
+          <h2 id="s1" className="text-xl font-semibold">What offer did you receive?</h2>
+          {textCells.map((c, i) => (
+            <div key={i} className="space-y-2">
+              <textarea
+                rows={4}
+                className="field"
+                value={c}
+                onChange={(e) => updateCell(i, e.target.value)}
+                placeholder="Paste the offer message, promoter reply, or additional text"
+                aria-invalid={i === 0 && !!localErr}
+                aria-describedby={i === 0 && !!localErr ? "text-err text-hint" : "text-hint"}
+              />
+              {textCells.length > 1 && (
+                <button type="button" className="btn-ghost" onClick={() => removeTextCell(i)}>
+                  Remove
+                </button>
+              )}
+            </div>
+          ))}
+          {textCells.length < 10 && (
+            <button type="button" className="btn-ghost" onClick={addTextCell}>
+              + Add another text
+            </button>
+          )}
+        </section>
+
+        <section aria-labelledby="s2" className="space-y-2">
+          <h2 id="s2" className="text-xl font-semibold">Optional details (not required)</h2>
+          <div className="grid gap-2">
+            <button type="button" className="btn-ghost" onClick={toggleVoice}>
+              {voiceBusy ? "Listening…" : "🎙 Speak"}
+            </button>
+            {voiceBusy && (
+              <p className="text-xs text-muted mt-1">Speak the offer, then click Cancel</p>
+            )}
+            {showVoice && (
+              <button type="button" className="btn-ghost" onClick={() => setShowVoice(false)}>
+                Cancel
+              </button>
+            )}
           </div>
-          {note && <p role="status" className="rounded-md bg-brand-tint p-3 text-sm">{note}</p>}
-        </section>
 
-        <section aria-labelledby="s2" className="space-y-4">
-          <h2 id="s2" className="text-xl font-semibold">2. Website (optional)</h2>
-          <Field id="url" label="Website or offer page" hint="We never open the page. We only look up public records about its address." error={errFor("url")}>
-            <input id="url" type="text" inputMode="url" autoComplete="off" className="field" value={form.url} onChange={(e) => set("url", e.target.value)} placeholder="https://example.com/offer" aria-invalid={!!errFor("url")} aria-describedby={errFor("url") ? "url-hint url-err" : "url-hint"} />
-          </Field>
-        </section>
-
-        <section aria-labelledby="s3" className="space-y-4">
-          <h2 id="s3" className="text-xl font-semibold">3. Token details (optional)</h2>
-          <Field id="token_name" label="Token or coin name" error={errFor("token_name")}>
-            <input id="token_name" type="text" className="field" maxLength={100} value={form.token_name} onChange={(e) => set("token_name", e.target.value)} placeholder="e.g. Bitcoin, or the new token's name" />
-          </Field>
-          <div className="grid gap-4 sm:grid-cols-[1fr_2fr]">
-            <Field id="chain" label="Blockchain" error={errFor("chain")}>
-              <select id="chain" className="field" value={form.chain} onChange={(e) => set("chain", e.target.value)} aria-invalid={!!errFor("chain")}>
-                <option value="">Select network</option>
-                {Object.entries(health?.chains ?? {}).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-                <option value="solana">Solana (cannot be verified yet)</option>
-                <option value="other">Other (cannot be verified yet)</option>
-              </select>
-            </Field>
-            <Field id="contract_address" label="Contract address" error={errFor("contract_address")}>
-              <input id="contract_address" type="text" spellCheck={false} autoComplete="off" className="field font-mono text-sm" value={form.contract_address} onChange={(e) => set("contract_address", e.target.value)} placeholder="0x…" aria-invalid={!!errFor("contract_address")} />
-            </Field>
+          <div className="mt-3">
+            <label className="text-xs text-muted">Website (optional)</label>
+            <input
+              type="url"
+              className="field w-full"
+              value={website}
+              onChange={(e) => setWebsite(e.target.value)}
+              placeholder="https://example.com/offer"
+              aria-invalid={!!localErr}
+            />
+            <label className="text-xs text-muted mt-1">Token / Contract (optional)</label>
+            <input
+              type="text"
+              className="field w-full"
+              value={tokenCont}
+              onChange={(e) => setTokenCont(e.target.value)}
+              placeholder="Token symbol or contract address (e.g. BTC, ETH, 0x...)"
+              aria-invalid={!!localErr}
+            />
           </div>
         </section>
 
-        <p className="rounded-md border border-signal/40 bg-signal-tint p-3 text-sm font-medium text-signal">Never paste a seed phrase, private key, password or OTP anywhere in this form. We never need them.</p>
-        <button type="submit" className="btn-primary w-full text-lg sm:w-auto">Analyse this offer</button>
+        {generalErr && (
+          <p role="alert" className="rounded-md border border-signal/40 bg-signal-tint p-3 text-signal">
+            {generalErr}
+          </p>
+        )}
+
+        <button type="submit" className="btn-primary w-full text-lg sm:w-auto">
+          CHECK OFFER
+        </button>
       </form>
     </main>
   );

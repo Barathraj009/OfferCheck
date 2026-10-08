@@ -8,6 +8,7 @@ import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
+import os  # added for .env reading
 from typing import Literal
 from fastapi import FastAPI, File, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
@@ -20,9 +21,56 @@ from .analysis import run_analysis
 from .config import get_settings
 from .validators import CHAINS, ValidationFailure
 
+# Whisper transcription router
+from .whisper_routes import api_whisper_router
+
+# Module-level settings instance (required by this module)
+S = get_settings()
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("scamcheck")
-S = get_settings()
+
+# --- Supabase configuration (optional, zero-cost mode if absent) ---
+supabase_url = ''
+supabase_anon_key = ''
+supabase_service_key = ''
+
+env_path = os.path.join(Path(__file__).resolve().parent.parent, '.env')
+if os.path.exists(env_path):
+    with open(env_path) as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line.startswith('NEXT_PUBLIC_SUPABASE_URL'):
+                supabase_url = _line.split('=', 1)[1].strip() if '=' in _line else ''
+            if _line.startswith('NEXT_PUBLIC_SUPABASE_ANON_KEY'):
+                supabase_anon_key = _line.split('=', 1)[1].strip() if '=' in _line else ''
+            if _line.startswith('SUPABASE_SERVICE_ROLE_KEY'):
+                supabase_service_key = _line.split('=', 1)[1].strip() if '=' in _line else ''
+
+try:
+    from supabase import create_client, Client
+    if supabase_url:
+        supabase: Client | None = create_client(supabase_url, supabase_anon_key or supabase_service_key or '')
+    else:
+        supabase = None
+except Exception:
+    supabase = None
+
+# --- Gemini configuration (optional, for offer understanding/explanation) ---
+gemini_key = os.getenv('GEMINI_API_KEY')
+gemini_enabled = False
+gemini_model = None
+if gemini_key:
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=gemini_key)
+        gemini_enabled = True
+        gemini_model = genai.GenerativeModel('gemini-3.5-flash')
+    except Exception:
+        gemini_enabled = False
+        gemini_model = None
+
+log = logging.getLogger("scamcheck")
 app = FastAPI(title="Crypto Offer Verification API", version="1.0")
 app.add_middleware(CORSMiddleware, allow_origins=S.allowed_origins, allow_methods=["GET", "POST", "DELETE"], allow_headers=["Content-Type"])
 
@@ -193,3 +241,6 @@ async def delete_report(rid: str):
 _dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 if _dist.is_dir():  # optional single-server deployment after `npm run build`
     app.mount("/", StaticFiles(directory=_dist, html=True), name="web")
+
+# Include whisper routes
+app.include_router(api_whisper_router, prefix="/api", tags=["whisper"])

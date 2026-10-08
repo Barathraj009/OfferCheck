@@ -92,11 +92,13 @@ export interface FormState {
   token_name: string;
   contract_address: string;
   chain: string;
+  website: string;
+  tokenCont: string;
   mode: "demo" | "live";
   demo_scenario: string | null;
   lang: string;
 }
 export const emptyForm = (mode: "demo" | "live" = "demo"): FormState => ({
-  text: "", url: "", token_name: "", contract_address: "", chain: "", mode, demo_scenario: null, lang: "en",
+  text: "", url: "", token_name: "", contract_address: "", chain: "", website: "", tokenCont: "", mode, demo_scenario: null, lang: "en",
 });
 export interface FieldError { field: string | null; message: string }
