@@ -1,12 +1,17 @@
 """Shared plumbing for external sources: TTL cache, in-flight de-duplication,
-uniform error type, JSON fetch helper, and the standard verification-result shape."""
+uniform error type, JSON fetch helper, and the standard verification-result shape.
+Hardened with SSRF protection, strict HTTPS enforcement, and bounded responses."""
 from __future__ import annotations
+
 import asyncio
+import ipaddress
 import json as json_lib
 import logging
+import socket
 import time
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
+from urllib.parse import urlsplit
 
 log = logging.getLogger("scamcheck")
 
@@ -58,14 +63,81 @@ MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_REDIRECTS = 5
 
 
+def is_private_or_local_ip(ip_str: str) -> bool:
+    """Check if an IP string belongs to private, loopback, link-local, or reserved ranges."""
+    try:
+        ip = ipaddress.ip_address(ip_str)
+        return (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        )
+    except ValueError:
+        return False
+
+
+def validate_safe_url(url: str, allow_local: bool = False) -> None:
+    """SSRF Guard: Enforce HTTPS scheme and block private/loopback IP destinations."""
+    try:
+        parsed = urlsplit(url)
+    except Exception:
+        raise SourceError("Invalid target URL format.", "security")
+
+    scheme = (parsed.scheme or "").lower()
+    hostname = (parsed.hostname or "").lower()
+
+    if not hostname:
+        raise SourceError("Target URL has no valid hostname.", "security")
+
+    if scheme not in ("https", "http"):
+        raise SourceError(f"Unsupported URL scheme '{scheme}': HTTPS is required.", "security")
+
+    if scheme == "http":
+        if not (allow_local and hostname in ("127.0.0.1", "localhost", "::1")):
+            raise SourceError("Insecure URL scheme (HTTP): HTTPS is strictly required for external requests.", "security")
+
+    if not allow_local:
+        # Check direct IP literal
+        if is_private_or_local_ip(hostname) or hostname in ("localhost", "0.0.0.0", "::1"):
+            raise SourceError(f"Access to private/local address ({hostname}) is blocked.", "security")
+
+        # Resolve DNS to catch DNS rebinding / hostnames pointing to internal addresses
+        try:
+            port = parsed.port or (443 if scheme == "https" else 80)
+            infos = socket.getaddrinfo(hostname, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+            for info in infos:
+                ip_addr = info[4][0]
+                if is_private_or_local_ip(ip_addr):
+                    raise SourceError(f"Target host {hostname} resolves to blocked internal address ({ip_addr}).", "security")
+        except socket.gaierror:
+            # DNS resolution failure will be caught cleanly by HTTP client transport
+            pass
+        except Exception as e:
+            if isinstance(e, SourceError):
+                raise
+
+
 def _host(url: str) -> str:
     return url.split("/")[2] if "//" in url else url
 
 
-async def _request(method: str, url: str, *, params=None, headers=None, json=None, timeout: float = 8.0) -> tuple[int, bytes]:
-    """Transport-level request with bounded redirects, a hard total deadline and a
+async def _request(
+    method: str,
+    url: str,
+    *,
+    params=None,
+    headers=None,
+    json=None,
+    timeout: float = 8.0,
+    allow_local: bool = False,
+) -> tuple[int, bytes]:
+    """Transport-level request with bounded redirects, SSRF validation, a hard total deadline and a
     capped response body. Returns (status_code, body). Raises SourceError for every
     transport failure; status-code handling belongs to the callers."""
+    validate_safe_url(url, allow_local=allow_local)
     import httpx  # lazy so the pure-logic modules/tests need no third-party packages
     host = _host(url)
     _cb_check(host)
@@ -139,11 +211,22 @@ async def cached(key: str, ttl: int, factory: Callable[[], Awaitable[Any]]):
         _inflight.pop(key, None)
 
 
-async def request_json(method: str, url: str, *, params=None, headers=None, json=None, timeout: float = 8.0):
+async def request_json(
+    method: str,
+    url: str,
+    *,
+    params=None,
+    headers=None,
+    json=None,
+    timeout: float = 8.0,
+    allow_local: bool = False,
+):
     """HTTP helper. Raises SourceError with a human-readable reason for every failure mode.
     Consults and updates the per-host circuit breaker."""
     host = _host(url)
-    status, body = await _request(method, url, params=params, headers=headers, json=json, timeout=timeout)
+    status, body = await _request(
+        method, url, params=params, headers=headers, json=json, timeout=timeout, allow_local=allow_local
+    )
     if status == 429:
         _cb_record(host, False)
         body_snip = body.decode("utf-8", errors="replace")[:200]
@@ -172,10 +255,10 @@ async def request_json(method: str, url: str, *, params=None, headers=None, json
     return data
 
 
-async def request_text(url: str, *, timeout: float = 8.0) -> str:
+async def request_text(url: str, *, timeout: float = 8.0, allow_local: bool = False) -> str:
     """Plain-text GET (used for the OpenPhish feed). Same error semantics and circuit breaker."""
     host = _host(url)
-    status, body = await _request("GET", url, timeout=timeout)
+    status, body = await _request("GET", url, timeout=timeout, allow_local=allow_local)
     if status == 429:
         _cb_record(host, False)
         raise SourceError("Rate limit reached for this free service. Try again later.", "rate_limited")

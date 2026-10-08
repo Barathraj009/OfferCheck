@@ -1,10 +1,13 @@
 """Comprehensive test for OCR and Document Extraction End-to-End flow."""
 import asyncio
 import io
+from pathlib import Path
+import sys
 import httpx
 from PIL import Image, ImageDraw, ImageFont
 import pypdf
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.main import app
 
 

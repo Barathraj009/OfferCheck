@@ -24,6 +24,10 @@ from .validators import CHAINS, ValidationFailure
 # Whisper transcription router
 from .whisper_routes import api_whisper_router
 
+from .key_check import probe_key_status, is_placeholder
+from .media_check import detect_media_magic
+from .ratelimit import limiter
+
 # Module-level settings instance (required by this module)
 S = get_settings()
 
@@ -39,26 +43,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_hits: dict[str, list[float]] = defaultdict(list)
 
-
-def _limited(request: Request, bucket: str = "") -> bool:
-    ip = request.client.host if request.client else "?"
-    if bucket:
-        ip = f"{bucket}:{ip}"
-    now = time.time()
-    if len(_hits) > 1000:  # bound memory even if many distinct IPs appear
-        for k in [k for k, v in _hits.items() if not v or now - v[-1] >= 600]:
-            _hits.pop(k, None)
-    _hits[ip] = [t for t in _hits[ip] if now - t < 600]
-    if len(_hits[ip]) >= S.rate_limit_per_10min:
-        return True
-    _hits[ip].append(now)
-    return False
-
-
-def _err(status: int, field: str | None, message: str):
-    return JSONResponse(status_code=status, content={"error": {"field": field, "message": message}})
+def _err(status: int, field: str | None, message: str, headers: dict | None = None):
+    return JSONResponse(
+        status_code=status,
+        content={"error": {"field": field, "message": message}},
+        headers=headers
+    )
 
 
 @app.exception_handler(RequestValidationError)
@@ -87,10 +78,28 @@ async def health():
     from .llm import ollama_status
     cfg = dict(S.configured())
     ollama = await ollama_status(S)
-    gemini_ready = bool(S.gemini_api_key)
+
+    groq_st = probe_key_status("groq", S.groq_api_key)
+    openrouter_st = probe_key_status("openrouter", S.openrouter_api_key)
+    gemini_st = probe_key_status("gemini", S.gemini_api_key)
+    anthropic_st = probe_key_status("anthropic", S.anthropic_api_key)
+
+    groq_ready = groq_st in ("valid", "unverified")
+    openrouter_ready = openrouter_st in ("valid", "unverified")
+    gemini_ready = gemini_st in ("valid", "unverified")
+    anthropic_ready = anthropic_st in ("valid", "unverified")
+
+    cfg["groq"] = groq_ready
+    cfg["openrouter"] = openrouter_ready
     cfg["gemini"] = gemini_ready
-    cfg["llm"] = gemini_ready or bool(ollama.get("available") and ollama.get("model")) or bool(S.anthropic_api_key)
-    free = {k: v for k, v in cfg.items() if k not in ("etherscan", "safe_browsing", "llm", "gemini", "supabase")}
+    cfg["llm"] = (
+        groq_ready
+        or openrouter_ready
+        or gemini_ready
+        or anthropic_ready
+        or bool(ollama.get("available") and ollama.get("model"))
+    )
+    free = {k: v for k, v in cfg.items() if k not in ("etherscan", "safe_browsing", "llm", "gemini", "groq", "openrouter", "supabase")}
     return {
         "ok": True,
         "default_mode": S.default_mode,
@@ -98,7 +107,9 @@ async def health():
         "chains": {k: v["label"] for k, v in CHAINS.items()},
         "max_input_chars": S.max_input_chars,
         "llm_provider": S.llm_provider,
-        "gemini": {"available": gemini_ready, "model": S.gemini_model if gemini_ready else None},
+        "groq": {"available": groq_ready, "status": groq_st, "model": S.groq_model if groq_ready else None},
+        "openrouter": {"available": openrouter_ready, "status": openrouter_st, "model": S.openrouter_model if openrouter_ready else None},
+        "gemini": {"available": gemini_ready, "status": gemini_st, "model": S.gemini_model if gemini_ready else None},
         "llm": ollama,
         "zero_cost_ready": all(free.values()),
     }
@@ -111,8 +122,17 @@ def scenarios():
 
 @app.post("/api/analyze")
 async def analyze(body: AnalyzeIn, request: Request):
-    if body.mode == "live" and _limited(request):
-        return _err(429, None, "Too many live analyses from this address. Please wait a few minutes.")
+    if body.mode == "live":
+        limited, retry_after = limiter.is_limited(
+            request, bucket="analyze:live", limit=S.rate_limit_per_10min, window_seconds=600
+        )
+        if limited:
+            return _err(
+                429,
+                None,
+                "Too many live analyses from this address. Please wait a few minutes.",
+                headers={"Retry-After": str(retry_after)}
+            )
     try:
         return await run_analysis(body.model_dump(), S)
     except ValidationFailure as e:
@@ -125,8 +145,9 @@ async def analyze(body: AnalyzeIn, request: Request):
 
 @app.post("/api/ocr")
 async def ocr(request: Request, file: UploadFile = File(...), lang: str = "eng"):
-    if _limited(request):
-        return _err(429, None, "Too many requests. Please wait a few minutes.")
+    limited, retry_after = limiter.is_limited(request, bucket="ocr", limit=30, window_seconds=600)
+    if limited:
+        return _err(429, None, "Too many requests. Please wait a few minutes.", headers={"Retry-After": str(retry_after)})
 
     allowed_types = (
         "image/png", "image/jpeg", "image/webp", "image/bmp", "image/tiff",
@@ -148,6 +169,13 @@ async def ocr(request: Request, file: UploadFile = File(...), lang: str = "eng")
         return _err(413, "file", f"The file is larger than {S.max_upload_bytes // 1_048_576} MB.")
     if not data:
         return _err(422, "file", "Uploaded file is empty.")
+
+    # Server-side binary magic bytes validation
+    magic_mime = detect_media_magic(data)
+    if not magic_mime or magic_mime not in (
+        "image/png", "image/jpeg", "image/webp", "image/bmp", "image/tiff", "application/pdf"
+    ):
+        return _err(415, "file", "Please upload an image (PNG, JPEG, WebP) or PDF file.")
 
     try:
         from .ocr_paddle import extract_document_text

@@ -4,7 +4,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const APP = "http://127.0.0.1:5173";
+const APP = process.env.APP_URL || "http://127.0.0.1:8000";
 const PORT = 9444;
 const CHROME = [
   "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
@@ -116,15 +116,20 @@ try {
 
   console.log("\n--- TEST C: Form Submission with Extracted Text ---");
   await evalJs("document.querySelector('form button[type=submit]').click()");
-  for (let i = 0; i < 40; i++) {
+  let reachedReport = false;
+  for (let i = 0; i < 120; i++) {
     await sleep(500);
     const hash = await evalJs("location.hash");
     if (hash === "#/report") {
+      reachedReport = true;
       console.log("PASS SUBMIT: Successfully reached #/report page!");
       const reportHeader = await evalJs("document.querySelector('h1')?.innerText");
       console.log("Report Header:", reportHeader);
       break;
     }
+  }
+  if (!reachedReport) {
+    throw new Error("Did not reach #/report page within timeout");
   }
 
   console.log("\nNetwork responses captured:");

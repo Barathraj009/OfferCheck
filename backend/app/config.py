@@ -23,14 +23,19 @@ class Settings:
     default_mode: str
     gemini_api_key: str
     gemini_model: str
+    groq_api_key: str
+    groq_model: str
+    openrouter_api_key: str
+    openrouter_model: str
     anthropic_api_key: str
     anthropic_model: str
     coingecko_api_key: str
     etherscan_api_key: str
     safe_browsing_api_key: str
-    llm_provider: str  # auto | gemini | ollama | anthropic | none
+    llm_provider: str  # auto | groq | gemini | openrouter | ollama | anthropic | none
     ollama_base_url: str
     ollama_model: str  # empty = auto-pick from installed models
+    ollama_timeout: float
     llm_timeout: float
     http_timeout: float
     cache_ttl: int
@@ -45,7 +50,7 @@ class Settings:
     def configured(self) -> dict[str, bool]:
         """Which live sources are usable. Everything except Etherscan/Google Safe Browsing
         works with no key at all (Sourcify, public RPC, GoPlus, DexScreener, RDAP, OpenPhish,
-        CoinGecko, Binance, Frankfurter are keyless; the LLM works via Gemini / local Ollama)."""
+        CoinGecko, Binance, Frankfurter are keyless; the LLM works via Groq / Gemini / OpenRouter / local Ollama)."""
         return {
             "coingecko": True,
             "goplus": True,
@@ -57,6 +62,8 @@ class Settings:
             "etherscan": bool(self.etherscan_api_key),
             "safe_browsing": bool(self.safe_browsing_api_key),
             "llm": self.llm_provider != "none",
+            "groq": bool(self.groq_api_key),
+            "openrouter": bool(self.openrouter_api_key),
             "gemini": bool(self.gemini_api_key),
             "supabase": bool(self.supabase_url and (self.supabase_anon_key or self.supabase_service_key)),
         }
@@ -65,7 +72,7 @@ class Settings:
 def get_settings() -> Settings:
     mode = _e("APP_MODE", "demo").lower()
     provider_raw = _e("LLM_PROVIDER", "auto").lower()
-    valid_providers = ("auto", "gemini", "ollama", "anthropic", "none")
+    valid_providers = ("auto", "groq", "gemini", "openrouter", "ollama", "anthropic", "none")
     llm_provider = provider_raw if provider_raw in valid_providers else "auto"
 
     # Support various Supabase env variable names
@@ -77,6 +84,10 @@ def get_settings() -> Settings:
         default_mode=mode if mode in ("demo", "live") else "demo",
         gemini_api_key=_e("GEMINI_API_KEY"),
         gemini_model=_e("GEMINI_MODEL", "gemini-2.5-flash"),
+        groq_api_key=_e("GROQ_API_KEY"),
+        groq_model=_e("GROQ_MODEL", "llama-3.3-70b-versatile"),
+        openrouter_api_key=_e("OPENROUTER_API_KEY"),
+        openrouter_model=_e("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free"),
         anthropic_api_key=_e("ANTHROPIC_API_KEY"),
         anthropic_model=_e("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001"),
         coingecko_api_key=_e("COINGECKO_API_KEY"),
@@ -85,12 +96,13 @@ def get_settings() -> Settings:
         llm_provider=llm_provider,
         ollama_base_url=_e("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/"),
         ollama_model=_e("OLLAMA_MODEL"),
-        llm_timeout=float(_e("LLM_TIMEOUT_SECONDS", "120")),
-        http_timeout=float(_e("HTTP_TIMEOUT_SECONDS", "8")),
+        ollama_timeout=float(_e("OLLAMA_TIMEOUT_SECONDS", "20.0")),
+        llm_timeout=float(_e("LLM_TIMEOUT_SECONDS", "15.0")),
+        http_timeout=float(_e("HTTP_TIMEOUT_SECONDS", "8.0")),
         cache_ttl=int(_e("CACHE_TTL_SECONDS", "600")),
         max_input_chars=int(_e("MAX_INPUT_CHARS", "6000")),
-        max_upload_bytes=int(_e("MAX_UPLOAD_BYTES", str(10 * 1024 * 1024))),
-        rate_limit_per_10min=int(_e("RATE_LIMIT_PER_10MIN", "60")),
+        max_upload_bytes=int(_e("MAX_UPLOAD_BYTES", str(5 * 1024 * 1024))),
+        rate_limit_per_10min=int(_e("RATE_LIMIT_PER_10MIN", "30")),
         allowed_origins=[o.strip() for o in _e("ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if o.strip()],
         supabase_url=sub_url,
         supabase_anon_key=sub_anon,

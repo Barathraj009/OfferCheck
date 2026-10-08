@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from .common import SourceError, cached, request_json, result
 from ..validators import registrable_domain
@@ -153,7 +153,10 @@ def _extract_brand_candidate(claims: dict, site: dict | None) -> str | None:
 
 async def _wiki_lookup(entity_name: str, s) -> dict | None:
     """Query Wikipedia REST summary API for canonical organization facts."""
-    slug = entity_name.strip().replace(" ", "_")
+    clean_name = re.sub(r"[^\w\s.-]", "", entity_name.strip())
+    slug = quote(clean_name.replace(" ", "_"), safe="")
+    if not slug:
+        return None
     headers = {"User-Agent": "OfferCheck/1.0 (entity-verifier; contact@offercheck.local)"}
     try:
         url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{slug}"

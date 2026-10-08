@@ -22,6 +22,9 @@ from dataclasses import dataclass
 
 from PIL import Image, ImageFilter, ImageOps
 
+# Guard against decompression bomb vulnerabilities (e.g. huge images)
+Image.MAX_IMAGE_PIXELS = 10_000_000
+
 log = logging.getLogger("scamcheck.ocr")
 
 # Stop early when recognition is already this confident (measured: good images >= 90,
@@ -193,6 +196,8 @@ def decode_image(data: bytes) -> Image.Image:
         img.load()  # full decode - catches truncated/corrupt payloads
     except ValueError:
         raise
+    except Image.DecompressionBombError as e:
+        raise ValueError("resolution too large (decompression bomb)") from e
     except Exception as e:  # noqa: BLE001
         raise ValueError("not an image") from e
     # Phone cameras often store orientation only in EXIF - apply it so sideways

@@ -11,6 +11,7 @@ Status meanings:
 Nothing is downloaded or installed by this script.
 """
 from __future__ import annotations
+
 import argparse
 import importlib
 import os
@@ -19,9 +20,16 @@ import sys
 
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+    _env_path = os.path.join(os.path.dirname(__file__), ".env")
+    if os.path.exists(_env_path):
+        load_dotenv(_env_path, override=True)
+    else:
+        load_dotenv(override=True)
 except Exception:
     pass
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from app.key_check import is_placeholder, probe_key_status
 
 R, O, M = "READY", "OPTIONAL", "MISSING"
 rows: list[tuple[str, str, str]] = []
@@ -41,9 +49,31 @@ def check_pkg(mod: str, name: str, required: bool, how: str = "pip install -r re
         return False
 
 
-def check_env(var: str, name: str, why: str) -> None:
-    v = os.environ.get(var, "").strip()
-    add(name, R if v else O, "set" if v else f"unset - {why}")
+def check_key(var: str, name: str, provider: str, signup_url: str = "", why_optional: str = "") -> None:
+    val = os.environ.get(var, "").strip()
+    if not val:
+        add(name, O, f"unset - {why_optional}")
+        return
+
+    if is_placeholder(val):
+        msg = f"placeholder ('{val[:15]}...'); replace with real key"
+        if signup_url:
+            msg += f" from {signup_url}"
+        add(name, O, msg)
+        return
+
+    st = probe_key_status(provider, val, timeout=3.0)
+    if st == "valid":
+        add(name, R, "valid (authenticated)")
+    elif st == "invalid":
+        msg = f"invalid API key (auth rejected)"
+        if signup_url:
+            msg += f"; get valid key at {signup_url}"
+        add(name, M, msg)
+    elif st == "placeholder":
+        add(name, O, f"placeholder ('{val[:15]}...')")
+    else:  # unverified
+        add(name, R, "set (unverified / network unreachable)")
 
 
 def probe(url: str, timeout: float = 5.0) -> tuple[bool, str]:
@@ -77,7 +107,6 @@ def main() -> int:
     binary = shutil.which("tesseract")
     if not binary:
         try:
-            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
             from app.ocr import ensure_tesseract  # type: ignore
             binary = ensure_tesseract()
         except Exception:  # noqa: BLE001
@@ -107,10 +136,23 @@ def main() -> int:
             add("Ollama daemon", R, "up, but no chat model installed")
             add("Local chat model", M, "run: ollama pull llama3.2:1b  (never auto-downloaded by this app)")
 
-    check_env("ANTHROPIC_API_KEY", "Anthropic key (optional AI fallback)", "local Ollama is used instead when available")
-    check_env("ETHERSCAN_API_KEY", "Etherscan key (optional extra verify layer)", "Sourcify + public RPCs verify without it")
-    check_env("GOOGLE_SAFE_BROWSING_API_KEY", "Safe Browsing key (optional)", "the OpenPhish feed is used without it")
-    check_env("COINGECKO_API_KEY", "CoinGecko key (optional, raises rate limits)", "CoinGecko works keyless")
+    check_key("GROQ_API_KEY", "Groq key (primary cloud AI)", "groq", signup_url="https://console.groq.com/keys", why_optional="local Ollama / heuristics used without it")
+    check_key("OPENROUTER_API_KEY", "OpenRouter key (optional secondary cloud AI)", "openrouter", signup_url="https://openrouter.ai/keys", why_optional="local Ollama / heuristics used without it")
+    check_key("GEMINI_API_KEY", "Gemini key (optional tertiary cloud AI)", "gemini", signup_url="https://aistudio.google.com/app/apikey", why_optional="local Ollama / heuristics used without it")
+    check_key("ANTHROPIC_API_KEY", "Anthropic key (optional AI fallback)", "anthropic", signup_url="https://console.anthropic.com/", why_optional="local Ollama used instead")
+
+    # Non-AI provider keys
+    eth_key = os.environ.get("ETHERSCAN_API_KEY", "").strip()
+    add("Etherscan key (optional extra verify layer)", R if eth_key and not is_placeholder(eth_key) else O,
+        "set" if eth_key and not is_placeholder(eth_key) else "unset - Sourcify + public RPCs verify without it")
+
+    sb_key = os.environ.get("GOOGLE_SAFE_BROWSING_API_KEY", "").strip()
+    add("Safe Browsing key (optional)", R if sb_key and not is_placeholder(sb_key) else O,
+        "set" if sb_key and not is_placeholder(sb_key) else "unset - the OpenPhish feed is used without it")
+
+    cg_key = os.environ.get("COINGECKO_API_KEY", "").strip()
+    add("CoinGecko key (optional, raises rate limits)", R if cg_key and not is_placeholder(cg_key) else O,
+        "set" if cg_key and not is_placeholder(cg_key) else "unset - CoinGecko works keyless")
 
     if args.probe:
         for name, url in [

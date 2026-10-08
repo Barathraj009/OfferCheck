@@ -108,33 +108,33 @@ class HttpLimitTests(unittest.TestCase):
         sc._cb.clear()
 
     def test_normal_json_still_works(self):
-        data = _run(request_json("GET", self.base + "/ok", timeout=5))
+        data = _run(request_json("GET", self.base + "/ok", timeout=5, allow_local=True))
         self.assertEqual(data, {"ok": True, "n": 42})
 
     def test_oversized_response_declared_in_header_rejected(self):
         with self.assertRaises(SourceError) as ctx:
-            _run(request_json("GET", self.base + "/big-declared", timeout=5))
+            _run(request_json("GET", self.base + "/big-declared", timeout=5, allow_local=True))
         self.assertEqual(ctx.exception.kind, "too_large")
 
     def test_oversized_streamed_response_rejected(self):
         with self.assertRaises(SourceError) as ctx:
-            _run(request_json("GET", self.base + "/big-streamed", timeout=5))
+            _run(request_json("GET", self.base + "/big-streamed", timeout=5, allow_local=True))
         self.assertEqual(ctx.exception.kind, "too_large")
 
     def test_redirect_loop_bounded(self):
         with self.assertRaises(SourceError) as ctx:
-            _run(request_json("GET", self.base + "/loop", timeout=5))
+            _run(request_json("GET", self.base + "/loop", timeout=5, allow_local=True))
         self.assertIn("redirect", ctx.exception.reason.lower())
 
     def test_slow_drip_hits_hard_deadline(self):
         t0 = time.time()
         with self.assertRaises(SourceError) as ctx:
-            _run(request_json("GET", self.base + "/drip", timeout=0.2))
+            _run(request_json("GET", self.base + "/drip", timeout=0.2, allow_local=True))
         self.assertEqual(ctx.exception.kind, "timeout")
         self.assertLess(time.time() - t0, 6.0, "hard deadline should stop the drip")
 
     def test_request_text_works(self):
-        text = _run(request_text(self.base + "/ok", timeout=5))
+        text = _run(request_text(self.base + "/ok", timeout=5, allow_local=True))
         self.assertIn("ok", text)
 
 
@@ -257,6 +257,118 @@ class LlmGuardTests(unittest.TestCase):
         merged = merge_llm(base, {"other_flags": ["Claims endorsement by a celebrity",  # allowlisted
                                                   "Totally free and safe opportunity"]})  # free text -> dropped
         self.assertEqual(len(merged["other_flags"]), n + 1)
+
+    def test_llm_safety_flags_require_verbatim_evidence(self):
+        """Prompt injection defense: Model cannot set safety flags without citing real quotes in the text."""
+        raw = "Selling Bitcoin for $30,000. Limited time deal ends Sunday."
+        
+        # 1. Model claims guaranteed_language but quotes nothing or fake quote -> rejected
+        fake_inj = {
+            "asset_name": "Bitcoin",
+            "guaranteed_language": True,
+            "phrases": {"guaranteed_language": "100% risk free guaranteed profits"}
+        }
+        out = validate_llm_claims(fake_inj, raw_text=raw)
+        self.assertFalse(out.get("guaranteed_language"))
+        self.assertNotIn("guaranteed_language", out.get("phrases", {}))
+
+        # 2. Model claims limited_time and provides verbatim quote present in text -> accepted
+        valid_ev = {
+            "asset_name": "Bitcoin",
+            "limited_time": True,
+            "phrases": {"limited_time": "Limited time deal ends Sunday"}
+        }
+        out2 = validate_llm_claims(valid_ev, raw_text=raw)
+        self.assertTrue(out2.get("limited_time"))
+        self.assertEqual(out2.get("phrases", {}).get("limited_time"), "Limited time deal ends Sunday")
+
+
+class SecurityVulnerabilityTests(unittest.TestCase):
+    def test_ssrf_validator_blocks_private_ips_and_insecure_schemes(self):
+        from app.sources.common import validate_safe_url
+        
+        # Insecure scheme blocked
+        with self.assertRaises(SourceError) as ctx:
+            validate_safe_url("http://api.coingecko.com/ping")
+        self.assertEqual(ctx.exception.kind, "security")
+
+        # Private IP / localhost blocked
+        for bad_url in [
+            "https://127.0.0.1/admin",
+            "https://10.0.0.1/secret",
+            "https://192.168.1.1/router",
+            "https://172.16.0.1/internal",
+            "https://169.254.169.254/latest/meta-data",
+            "https://localhost/metrics",
+            "https://0.0.0.0/api"
+        ]:
+            with self.assertRaises(SourceError) as ctx:
+                validate_safe_url(bad_url)
+            self.assertEqual(ctx.exception.kind, "security")
+
+        # Localhost permitted ONLY with explicit allow_local=True (for Ollama daemon)
+        validate_safe_url("http://127.0.0.1:11434/api/tags", allow_local=True)
+        validate_safe_url("https://api.groq.com/openai/v1/models", allow_local=False)
+
+    def test_media_magic_detection(self):
+        from app.media_check import detect_media_magic
+        
+        # Valid image/pdf magic bytes
+        self.assertEqual(detect_media_magic(b"\x89PNG\r\n\x1a\n\x00\x00"), "image/png")
+        self.assertEqual(detect_media_magic(b"\xff\xd8\xff\xe0\x00\x10JFIF"), "image/jpeg")
+        self.assertEqual(detect_media_magic(b"RIFF\x20\x00\x00\x00WEBPVP8"), "image/webp")
+        self.assertEqual(detect_media_magic(b"%PDF-1.4\n%..."), "application/pdf")
+        self.assertEqual(detect_media_magic(b"BM\x00\x00\x00\x00"), "image/bmp")
+
+        # Valid audio magic bytes
+        self.assertEqual(detect_media_magic(b"RIFF\x24\x00\x00\x00WAVEfmt "), "audio/wav")
+        self.assertEqual(detect_media_magic(b"\x1a\x45\xdf\xa3\x9f\x42\x86"), "audio/webm")
+        self.assertEqual(detect_media_magic(b"OggS\x00\x02\x00\x00"), "audio/ogg")
+        self.assertEqual(detect_media_magic(b"ID3\x04\x00\x00"), "audio/mpeg")
+        self.assertEqual(detect_media_magic(b"fLaC\x00\x00\x00"), "audio/flac")
+
+        # Invalids
+        self.assertIsNone(detect_media_magic(b"<html><script>alert(1)</script></html>"))
+        self.assertIsNone(detect_media_magic(b"plain text file"))
+        self.assertIsNone(detect_media_magic(b""))
+
+    def test_key_placeholder_detection(self):
+        from app.key_check import is_placeholder
+        
+        self.assertTrue(is_placeholder("your-groq-api-key-here"))
+        self.assertTrue(is_placeholder("your_gemini_key"))
+        self.assertTrue(is_placeholder("gsk_placeholder_123"))
+        self.assertTrue(is_placeholder("todo_replace_me"))
+        self.assertTrue(is_placeholder("short"))
+        self.assertTrue(is_placeholder(""))
+        self.assertTrue(is_placeholder(None))
+        self.assertFalse(is_placeholder("gsk_3a8f9b2c1d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c"))
+
+    def test_ip_rate_limiter_logic(self):
+        from unittest.mock import MagicMock
+        from app.ratelimit import IPRateLimiter
+        
+        lim = IPRateLimiter()
+        mock_req = MagicMock()
+        mock_req.headers = {}
+        mock_req.client.host = "192.0.2.42"
+
+        # Under limit
+        for _ in range(5):
+            limited, retry = lim.is_limited(mock_req, bucket="test", limit=5, window_seconds=60)
+        
+        # Exceeded limit
+        limited, retry = lim.is_limited(mock_req, bucket="test", limit=5, window_seconds=60)
+        self.assertTrue(limited)
+        self.assertGreater(retry, 0)
+
+    def test_pillow_max_image_pixels_configured(self):
+        import PIL.Image
+        import app.media_check
+        import app.ocr
+        import app.ocr_paddle
+        self.assertIsNotNone(PIL.Image.MAX_IMAGE_PIXELS)
+        self.assertEqual(PIL.Image.MAX_IMAGE_PIXELS, 10_000_000)
 
 
 if __name__ == "__main__":

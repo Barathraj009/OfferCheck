@@ -16,6 +16,9 @@ from typing import Optional
 
 from PIL import Image
 
+# Guard against decompression bomb vulnerabilities (e.g. huge images)
+Image.MAX_IMAGE_PIXELS = 10_000_000
+
 log = logging.getLogger("scamcheck.ocr")
 
 from .ocr import (

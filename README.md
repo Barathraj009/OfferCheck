@@ -58,9 +58,12 @@ OCR: install Tesseract (`sudo apt install tesseract-ocr`, `brew install tesserac
 | Variable | Purpose |
 |---|---|
 | `APP_MODE` | `demo` (default) or `live`; users can switch in the UI |
-| `LLM_PROVIDER` | `auto` (local Ollama → optional Anthropic), `ollama` (local only), `anthropic`, `none` |
-| `OLLAMA_BASE_URL`, `OLLAMA_MODEL`, `LLM_TIMEOUT_SECONDS` | Local model endpoint; model (empty = auto-pick installed); per-call timeout (default 120 s) |
-| `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` | Optional hosted LLM fallback (max 2 cached calls per analysis) |
+| `LLM_PROVIDER` | `auto` (Groq → OpenRouter → Gemini → Ollama → deterministic), `groq`, `openrouter`, `gemini`, `ollama`, `none` |
+| `GROQ_API_KEY`, `GROQ_MODEL` | Primary cloud AI (default: `llama-3.3-70b-versatile`; get free key at https://console.groq.com/keys) |
+| `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` | Secondary cloud AI (default: `meta-llama/llama-3.3-70b-instruct:free`) |
+| `GEMINI_API_KEY`, `GEMINI_MODEL` | Tertiary cloud AI (default: `gemini-2.5-flash`) |
+| `OLLAMA_BASE_URL`, `OLLAMA_MODEL`, `OLLAMA_TIMEOUT_SECONDS` | Local offline AI (runs locally, zero-cost, no key needed; 20s timeout guard) |
+| `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` | Optional legacy hosted LLM fallback |
 | `COINGECKO_API_KEY` | Optional (free Demo key raises rate limits) |
 | `ETHERSCAN_API_KEY` | Optional extra contract-verification layer (Sourcify + RPC work without it) |
 | `GOOGLE_SAFE_BROWSING_API_KEY` | Optional website-safety layer (OpenPhish feed is used without it) |

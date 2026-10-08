@@ -11,9 +11,14 @@ from .common import SourceError, cached, request_json, request_text, result
 from ..validators import registrable_domain
 
 
+import re
+
 async def _rdap(dom: str, s) -> dict:
+    clean_dom = re.sub(r"[^a-zA-Z0-9.-]", "", dom.strip())
+    if not clean_dom or ".." in clean_dom:
+        raise SourceError("Invalid domain name format for RDAP lookup.", "malformed")
     try:
-        d = await cached(f"rdap:{dom}", s.cache_ttl * 6, lambda: request_json("GET", f"https://rdap.org/domain/{dom}", timeout=s.http_timeout))
+        d = await cached(f"rdap:{clean_dom}", s.cache_ttl * 6, lambda: request_json("GET", f"https://rdap.org/domain/{clean_dom}", timeout=s.http_timeout))
     except SourceError as e:
         if e.kind == "not_found":
             raise SourceError("No public RDAP record for this domain/TLD, so its age could not be determined.", "not_found")

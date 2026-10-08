@@ -114,7 +114,7 @@ def heuristic_extract(text: str) -> dict:
             _, aid, name, sym = min(hits)
             c.update(asset_id=aid, asset_name=name, asset_symbol=sym)
         else:
-            m = re.search(r"\btoken\s+(?:named|called)\s+([A-Z][A-Za-z0-9]{2,20})", text)
+            m = re.search(r"\b(?:token|coin)\s+(?:name|named|called|is)[:\s]+([A-Za-z0-9]{2,20})", text, re.I)
             if m:
                 c["asset_name"] = m.group(1)
     # price & quantity
@@ -197,6 +197,10 @@ def heuristic_extract(text: str) -> dict:
         em = re.search(r"\b(?:from|at|join|by|welcome to)\s+([A-Z][A-Za-z0-9]+(?:\s+[A-Z][A-Za-z0-9]+)*)\b", text)
         if em and em.group(1).lower() not in ("telegram", "whatsapp", "our", "the", "my", "this", "us"):
             c["entity_name"] = em.group(1)[:50]
+    if not c["entity_name"]:
+        fm = re.match(r"^\s*([A-Z][A-Za-z0-9]{2,25})\b", text)
+        if fm and fm.group(1).lower() not in ("dear", "hello", "hi", "hey", "warning", "notice", "official", "welcome", "selling", "buying", "invest", "urgent"):
+            c["entity_name"] = fm.group(1)
     return c
 
 
