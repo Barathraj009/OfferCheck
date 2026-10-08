@@ -20,6 +20,7 @@ CLAIM_SRC = "Offer text (your input)"
 # Neutral titles + plain-language explanations. Weights live in the rule functions below, next to their conditions.
 META = {
     "PRICE_BELOW_MARKET": ("Offer price compared with market price", "Scammers often sell well-known coins far below the real price to lure people who don't know it.", "Real sellers rarely give a large discount, because they could sell at the market price in minutes. A big discount is a common bait."),
+    "PRICE_BAIT_UNSTATED_QUANTITY": ("Implausible discount (quantity unstated)", "Real crypto assets are never sold at an 80%+ discount on standard markets without an unstated fractional quantity or bait pricing.", "When an offer promises an asset like Bitcoin far below market price without specifying the amount, it is either an unrealistic bait price or refers to a tiny fraction of a coin. Always verify the exact coin amount you are paying for."),
     "ASSET_NOT_FOUND": ("Listing on a market-data source", "A token that no recognised data source lists is harder to verify.", "Not being listed does not prove a scam - brand-new legitimate tokens may not be indexed yet - but it means you cannot independently confirm that the token is real."),
     "CONTRACT_UNVERIFIED": ("Contract source code published", "If the code is not public, nobody can check what the contract can do.", "Legitimate projects normally publish ('verify') their contract code on the block explorer so anyone can read it. Hidden code can contain traps."),
     "HONEYPOT": ("Honeypot (can you sell?) check", "A honeypot lets people buy but blocks or severely restricts selling.", "A honeypot is a token setup that may allow people to buy the token but prevent or severely restrict them from selling it, so your money gets trapped."),
@@ -81,7 +82,14 @@ def r_price(cl, ck):
         return None
     diff = (mkt - unit) / mkt * 100
     if cl.get("quantity_assumed") and diff > 80:
-        return None
+        if not cl.get("price_verbatim"):
+            return None
+        # Verbatim bait price: quantity unstated + diff > 80% + verbatim in text
+        sym = cl.get("asset_symbol") or cl.get("asset_name") or "BTC"
+        obs = f"Offer is ~{diff:.1f}% below market — either a bait price or a tiny fraction of 1 {sym}; verify exactly what quantity you receive."
+        return _f("PRICE_BAIT_UNSTATED_QUANTITY", 25, obs, m,
+                  evidence={"offer_unit_price": unit, "market_price": mkt, "difference_pct": round(diff, 1),
+                            "currency": cur.upper(), "quantity_assumed": True, "price_verbatim": True})
     pts = 40 if diff > 60 else 35 if diff > 40 else 28 if diff > 20 else 10 if diff > 10 else 0
     if pts == 0:
         return None
@@ -301,25 +309,33 @@ def detect_conflicts(cl: dict, ck: dict) -> list[str]:
 
 
 def confidence(cov: dict, conflicts: list[str]) -> dict:
-    aw, apw = cov["_aw"], cov["_apw"]
+    """
+    Confidence Formula:
+    Confidence Score = sum(weight of verified/answered checks) - conflict_penalties
+    Total available check weights sum to 100 across the 7 checks:
+      - entity: 20, market: 20, explorer: 10, security: 20, liquidity: 10, domain: 10, webSafety: 10
+    Confidence Level:
+      - High: score >= 65
+      - Medium: 35 <= score < 65
+      - Low: score < 35
+    """
+    aw = cov["_aw"]  # Sum of weights for completed (verified/not_found) checks
     reasons = [f"{cov['available']} of {cov['total']} verification checks returned an answer."]
-    if apw == 0:
-        score = 0
+    
+    score = aw
+    if cov["unavailable"]:
+        reasons.append("Unavailable: " + "; ".join(f"{u['label']} ({u['source']})" for u in cov["unavailable"]) + ".")
+    if cov["not_applicable"]:
+        reasons.append(f"{len(cov['not_applicable'])} check(s) not run because the needed input was not provided (" + ", ".join(n["label"] for n in cov["not_applicable"]) + ").")
+    if cov["_apw"] == 0:
         reasons.append("No external checks could be run: provide a token name, contract address or website to enable them.")
-    else:
-        base = aw / apw
-        completeness = 0.5 + 0.5 * apw / 100
-        score = round(100 * base * completeness)
-        if cov["unavailable"]:
-            reasons.append("Unavailable: " + "; ".join(f"{u['label']} ({u['source']})" for u in cov["unavailable"]) + ".")
-        if cov["not_applicable"]:
-            reasons.append(f"{len(cov['not_applicable'])} check(s) not run because the needed input was not provided (" + ", ".join(n["label"] for n in cov["not_applicable"]) + ").")
+
     if conflicts:
-        score -= min(20, 10 * len(conflicts))
-        reasons.append(f"{len(conflicts)} conflict(s) between data points reduce confidence.")
+        penalty = min(20, 10 * len(conflicts))
+        score -= penalty
+        reasons.append(f"{len(conflicts)} conflict(s) between data points reduce confidence (-{penalty} pts).")
+
     score = max(0, min(100, score))
-    if cov["available"] == 0:
-        score = min(score, 20)
     level = "High" if score >= 65 else "Medium" if score >= 35 else "Low"
     return {"score": score, "level": level, "reasons": reasons}
 
@@ -345,19 +361,19 @@ def assess(claims: dict, checks: dict) -> dict:
         score = min(score, 15)  # Verified official company domain
         key, label = "low", "Low Risk"
         insufficient = False
-    elif is_impersonation or has_critical_exploit or score >= 40:
+    elif is_impersonation or has_critical_exploit or score >= 25:
         outcome = "suspicious"
-        outcome_label = "Suspicious / High Risk"
+        outcome_label = "Suspicious" if score < 50 else "Suspicious / High Risk"
         key, label = next((k, l) for t, k, l in LEVELS if score >= t)
         insufficient = False
-    elif cov["available"] == 0 or (score < 30 and not is_verified_entity and cov["available"] <= 1):
+    elif cov["available"] == 0 or (score == 0 and not is_verified_entity and cov["available"] <= 1):
         outcome = "could-not-verify"
         outcome_label = "Could Not Verify (Inconclusive)"
         score = min(score, 20)  # Capped: never assume max risk on weak/missing evidence
         key, label = "insufficient", "Could Not Verify"
         insufficient = True
     else:
-        if score <= 25:
+        if score <= 20:
             outcome = "verified-legit" if cov["available"] >= 2 else "could-not-verify"
             outcome_label = "Low Risk / Likely Safe" if outcome == "verified-legit" else "Could Not Verify (Inconclusive)"
             key, label = "low", "Low Risk"

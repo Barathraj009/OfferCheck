@@ -50,6 +50,7 @@ export interface Claims {
   quoted_currency: string | null;
   quantity: number | null;
   quantity_assumed: boolean;
+  price_verbatim?: boolean;
   claimed_market_price: number | null;
   promised_return_pct: number | null;
   promised_multiplier: number | null;

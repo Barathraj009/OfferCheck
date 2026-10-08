@@ -83,7 +83,7 @@ def get_settings() -> Settings:
     return Settings(
         default_mode=mode if mode in ("demo", "live") else "demo",
         gemini_api_key=_e("GEMINI_API_KEY"),
-        gemini_model=_e("GEMINI_MODEL", "gemini-2.5-flash"),
+        gemini_model=_e("GEMINI_MODEL", "gemini-flash-latest"),
         groq_api_key=_e("GROQ_API_KEY"),
         groq_model=_e("GROQ_MODEL", "llama-3.3-70b-versatile"),
         openrouter_api_key=_e("OPENROUTER_API_KEY"),

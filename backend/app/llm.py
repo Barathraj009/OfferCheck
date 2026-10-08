@@ -9,7 +9,7 @@ import hashlib
 import json
 import logging
 import re
-from .extraction import CUR, MULT, _M, _num
+from .extraction import CUR, MULT, _M, _num, is_price_verbatim
 from .key_check import is_placeholder
 from .sources.common import SourceError, cached, request_json
 
@@ -65,6 +65,7 @@ SUMMARY_SYS = (
 _ALLOWED = {
     "asset_name": str, "asset_symbol": str, "entity_name": str, "contract_address": str, "chain": str,
     "claimed_price": float, "quoted_currency": str, "price_is_per_unit": bool, "quantity": float,
+    "price_verbatim": bool,
     "claimed_market_price": float, "promised_return_pct": float, "promised_multiplier": float,
     "return_period_days": float, "guaranteed_language": bool, "referral": bool, "urgency": bool,
     "limited_time": bool, "requests_secrets": bool, "seller_identity": str, "website_url": str
@@ -248,7 +249,7 @@ async def _gemini_call(s, system: str, user: str, max_tokens: int) -> str:
         try:
             import google.generativeai as genai
             genai.configure(api_key=s.gemini_api_key)
-            models_to_try = [s.gemini_model, "gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.5-flash"]
+            models_to_try = [s.gemini_model, "gemini-flash-latest", "gemini-3.8-flash"]
             seen = set()
             models = [m for m in models_to_try if m and not (m in seen or seen.add(m))]
             last_err = None
@@ -474,6 +475,8 @@ def validate_llm_claims(obj, raw_text: str = "") -> dict:
         out.pop("seller_identity")
     of = obj.get("other_flags")
     out["other_flags"] = [str(x)[:100] for x in of[:4]] if isinstance(of, list) else []
+    if out.get("claimed_price") is not None:
+        out["price_verbatim"] = is_price_verbatim(out["claimed_price"], raw_text) if raw_text else bool(obj.get("price_verbatim", False))
     return {k: v for k, v in out.items() if v is not None}
 
 

@@ -58,11 +58,27 @@ function FindingCard({ f }: { f: Finding }) {
   );
 }
 
-function claimRows(c: Claims): [string, string][] {
+function claimRows(c: Claims, checks?: Check[]): [string, string][] {
+  const mCheck = checks?.find((k) => k.check_id === "market" && k.status === "verified");
+  const cur = (c.quoted_currency || "USD").toLowerCase();
+  const mktPrice = (mCheck?.data?.prices as Record<string, number> | undefined)?.[cur];
+  let mktComparison: string | null = null;
+  if (c.claimed_price != null && mktPrice != null && mktPrice > 0) {
+    const diff = ((mktPrice - c.claimed_price) / mktPrice) * 100;
+    const src = mCheck?.source || "CoinGecko";
+    mktComparison = `Market price (${src}): ${c.quoted_currency ?? "USD"} ${mktPrice.toLocaleString("en-IN")} — offer is ${Math.abs(diff).toFixed(1)}% ${diff >= 0 ? "below" : "above"} market.`;
+  }
+
+  const priceAsked = c.claimed_price != null
+    ? `${c.quoted_currency ?? ""} ${c.claimed_price.toLocaleString("en-IN")}${c.quantity ? ` for ${c.quantity} unit(s)` : c.quantity_assumed ? " (quantity not stated; 1 unit assumed)" : ""}${mktComparison ? ` — ${mktComparison}` : ""}`
+    : (c.asset_name || c.asset_symbol || c.contract_address)
+    ? "Offer price not detected — add it to run the price check"
+    : null;
+
   const rows: [string, string | null][] = [
     ["Company / Brand", c.entity_name ?? null],
     ["Asset", c.asset_name ? `${c.asset_name}${c.asset_symbol ? ` (${c.asset_symbol})` : ""}` : null],
-    ["Price asked", c.claimed_price != null ? `${c.quoted_currency ?? ""} ${c.claimed_price.toLocaleString("en-IN")}${c.quantity ? ` for ${c.quantity} unit(s)` : c.quantity_assumed ? " (quantity not stated; 1 unit assumed)" : ""}` : (c.asset_name || c.asset_symbol || c.contract_address) ? "Offer price not detected — add it to run the price check" : null],
+    ["Price asked", priceAsked],
     ["Market price the seller states", c.claimed_market_price != null ? `${c.quoted_currency ?? ""} ${c.claimed_market_price.toLocaleString("en-IN")}` : null],
     ["Promised return", c.promised_multiplier ? `${c.promised_multiplier}x` : c.promised_return_pct ? `${c.promised_return_pct}%` : null],
     ["Time period", c.return_period_days ? `${c.return_period_days} day(s)` : null],
@@ -144,7 +160,7 @@ export default function ReportPage({ report: rProp, reportId, onNew }: { report:
   const st = LEVEL_STYLE[r.risk.level_key] ?? LEVEL_STYLE.insufficient;
   const risk = r.findings.filter((f) => f.points > 0);
   const fine = r.findings.filter((f) => f.points === 0);
-  const rows = claimRows(r.claims);
+  const rows = claimRows(r.claims, r.checks);
   return (
     <main id="main" tabIndex={-1} className="mx-auto max-w-4xl px-4 py-10">
       {r.is_demo && (
@@ -217,7 +233,9 @@ export default function ReportPage({ report: rProp, reportId, onNew }: { report:
       <section aria-labelledby="summary" className="card mt-6 p-5">
         <h2 id="summary" className="text-xl font-semibold">In plain words</h2>
         <p className="mt-2 max-w-prose">{r.summary.text}</p>
-        <p className="mt-2 text-xs text-muted">{r.summary.method === "llm" ? "Written by an AI model from the verified findings below. It cannot change the score." : "Generated from a fixed template using the verified findings below."}</p>
+        {r.summary.method === "llm" && (
+          <p className="mt-2 text-xs text-muted">Written by an AI model from the verified findings below. It cannot change the score.</p>
+        )}
       </section>
 
       <section aria-labelledby="claims" className="mt-8">

@@ -51,10 +51,55 @@ CHAIN_HINTS = [("bsc", r"\bbnb chain\b|\bbsc\b|binance smart chain|\bbep-?20\b")
 def empty_claims() -> dict:
     return {"asset_name": None, "asset_symbol": None, "asset_id": None, "contract_address": None, "chain": None,
             "claimed_price": None, "quoted_currency": None, "price_is_per_unit": False, "quantity": None,
-            "quantity_assumed": False, "claimed_market_price": None, "promised_return_pct": None,
+            "quantity_assumed": False, "price_verbatim": False, "claimed_market_price": None, "promised_return_pct": None,
             "promised_multiplier": None, "return_period_days": None, "guaranteed_language": False,
             "referral": False, "urgency": False, "limited_time": False, "requests_secrets": False,
             "seller_identity": None, "entity_name": None, "website_url": None, "other_flags": [], "phrases": {}, "extraction_method": "heuristic"}
+
+
+def is_price_verbatim(claimed_price: float | None, text: str) -> bool:
+    """True only if the parsed amount appears in the raw input text in plain, formatted, or word form."""
+    if claimed_price is None or not text or claimed_price <= 0:
+        return False
+    # 1. Check if _prices parsed this exact numeric value from the text
+    for p in _prices(text):
+        if abs(p["value"] - claimed_price) < 1e-5:
+            return True
+
+    # 2. Check direct numeric appearances in text (plain, standard comma, Indian comma)
+    if isinstance(claimed_price, (int, float)) and float(claimed_price).is_integer():
+        ival = int(claimed_price)
+        s_plain = str(ival)
+        s_comma = f"{ival:,}"
+        
+        # Indian grouping (e.g. 150000 -> "1,50,000", 1000000 -> "10,00,000")
+        s_ind = ""
+        s_str = str(ival)
+        if len(s_str) > 3:
+            last3 = s_str[-3:]
+            rem = s_str[:-3]
+            pairs = []
+            while len(rem) > 2:
+                pairs.insert(0, rem[-2:])
+                rem = rem[:-2]
+            if rem:
+                pairs.insert(0, rem)
+            s_ind = ",".join(pairs) + "," + last3
+
+        patterns = [re.escape(s_plain), re.escape(s_comma)]
+        if s_ind and s_ind not in patterns:
+            patterns.append(re.escape(s_ind))
+
+        rx = re.compile(r"(?<![\d.])(?:" + "|".join(patterns) + r")(?!\d)")
+        if rx.search(text):
+            return True
+    else:
+        s_float = f"{claimed_price:g}"
+        rx = re.compile(r"(?<![\d.])" + re.escape(s_float) + r"(?!\d)")
+        if rx.search(text):
+            return True
+
+    return False
 
 
 def _num(s: str, mult: str | None) -> float:
@@ -229,6 +274,7 @@ def heuristic_extract(text: str) -> dict:
         fm = re.match(r"^\s*([A-Z][A-Za-z0-9]{2,25})\b", text)
         if fm and fm.group(1).lower() not in ("dear", "hello", "hi", "hey", "warning", "notice", "official", "welcome", "selling", "buying", "invest", "urgent"):
             c["entity_name"] = fm.group(1)
+    c["price_verbatim"] = is_price_verbatim(c.get("claimed_price"), text)
     return c
 
 
@@ -237,7 +283,7 @@ _FLAG_OK = ("telegram", "whatsapp", "phone", "call", "upi", "gpay", "phonepe", "
             "sebi", "rbi", "government", "kyc", "admin", "verify account", "impersonat")
 
 
-def merge_llm(base: dict, llm: dict | None) -> dict:
+def merge_llm(base: dict, llm: dict | None, raw_text: str = "") -> dict:
     """Fill gaps only. Heuristic values win; booleans are OR-ed. LLM output was already type-validated
     in llm.py. Extra guards so a small/local model (or prompt injection inside the offer) cannot
     inject fields the evidence does not support:
@@ -247,7 +293,7 @@ def merge_llm(base: dict, llm: dict | None) -> dict:
     if not llm:
         return base
     for k, v in llm.items():
-        if k not in base or k in ("phrases", "extraction_method", "other_flags") or v in (None, "", False):
+        if k not in base or k in ("phrases", "extraction_method", "other_flags", "price_verbatim") or v in (None, "", False):
             continue
         if k == "chain" and not (base.get("contract_address") or llm.get("contract_address")):
             continue
@@ -260,4 +306,13 @@ def merge_llm(base: dict, llm: dict | None) -> dict:
         if any(ok in fl for ok in _FLAG_OK) and f not in base["other_flags"] and len(base["other_flags"]) < 6:
             base["other_flags"].append(f)
     base["extraction_method"] = "heuristic+llm"
+    if base.get("claimed_price") is not None:
+        if raw_text:
+            base["price_verbatim"] = is_price_verbatim(base["claimed_price"], raw_text)
+        elif "price_verbatim" in llm:
+            base["price_verbatim"] = bool(base.get("price_verbatim") or llm.get("price_verbatim"))
+        else:
+            base["price_verbatim"] = bool(base.get("price_verbatim", False))
+    else:
+        base["price_verbatim"] = False
     return base

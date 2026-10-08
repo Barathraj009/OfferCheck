@@ -73,7 +73,7 @@ async def run_analysis(p: dict, s) -> dict:
         out = await extract_claims_llm(text, s)
         if out:
             llm_claims, llm_provider = out
-            claims = merge_llm(claims, llm_claims)
+            claims = merge_llm(claims, llm_claims, text)
     if token:
         claims.update(asset_name=token, asset_id=None, asset_symbol=None)
         for aid, (name, sym, _) in KNOWN_ASSETS.items():
