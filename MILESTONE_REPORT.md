@@ -35,3 +35,17 @@ git status
 git branch -vv
 git log --oneline -10
 git push -u origin feature/phase-3-hardening
+## Phase 3 status summary
+- 3A OCR: complete (unit + integration tests)
+- 3B Security: hardening + tests (62 unit + integration checks)
+- 3C Persistence: SQLite local store + API + tests
+- 3D Export: JSON/share link + UI
+- 3E UX: semantic/accessible markup, motion respect, focus, print styles (polish)
+- 3F Multi-chain: modular chain sources, EVM supported, non-EVM clearly represented
+
+## Regression results
+- Unit tests: 70/70 OK
+- Integration HTTP: 46/46 checks OK
+- Frontend typecheck+build: OK
+
+Ready for PR review on feature/phase-3-hardening.
